@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=PenguinCraft
+GenericName=Minecraft Launcher
+Comment=Лёгкий лаунчер Minecraft для Linux и ChromeOS
+Comment[en]=Lightweight Minecraft launcher for Linux and ChromeOS
+Exec=penguincraft gui
+TryExec=penguincraft
+Icon=penguincraft
+Terminal=false
+Categories=Game;ActionGame;
+Keywords=Minecraft;Game;Launcher;Mods;ChromeOS;
+StartupNotify=true
+StartupWMClass=Penguincraft

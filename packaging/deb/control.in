@@ -1,0 +1,19 @@
+Package: penguincraft
+Version: @VERSION@
+Section: games
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.9), python3-tk
+Recommends: xdg-utils
+Installed-Size: @SIZE@
+Maintainer: PenguinCraft <penguincraft@localhost>
+Homepage: https://github.com/penguincraft
+Description: Лёгкий лаунчер Minecraft для Linux и ChromeOS (Crostini)
+ PenguinCraft написан на чистом Python 3 с интерфейсом на tkinter и не
+ требует сторонних библиотек.
+ .
+ Возможности: загрузка версий Mojang, установка Fabric, Quilt, Forge и
+ NeoForge, вход через Microsoft, офлайн-профили и Ely.by, поиск и
+ установка модов и модпаков (.mrpack) с Modrinth, отдельные каталоги
+ экземпляров, автоматическая загрузка нужной версии Java и экономные
+ профили JVM для хромбуков.

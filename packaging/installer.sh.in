@@ -1,0 +1,180 @@
+#!/bin/sh
+# PenguinCraft @VERSION@ — самораспаковывающийся установщик для Linux и ChromeOS (Crostini).
+#
+# Ставит лаунчер в домашний каталог пользователя: код, команду, пункт меню
+# и иконку.  Права root не нужны.  Данные лаунчера (версии, экземпляры,
+# аккаунты) лежат отдельно — в ~/.local/share/penguincraft.
+#
+#   sh PenguinCraft-@VERSION@-installer.sh              установить
+#   sh PenguinCraft-@VERSION@-installer.sh --uninstall  удалить
+#   sh PenguinCraft-@VERSION@-installer.sh --help       справка
+#
+# Повторный запуск установщика обновляет лаунчер поверх старой версии.
+
+set -eu
+
+APP_ID="@APP_ID@"
+VERSION="@VERSION@"
+
+PREFIX="${PENGUINCRAFT_PREFIX:-$HOME/.local/opt/$APP_ID}"
+BIN_DIR="${PENGUINCRAFT_BIN:-$HOME/.local/bin}"
+APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+ICON_BASE="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
+ICON_DIR="$ICON_BASE/256x256/apps"
+
+APP_DIR="$PREFIX/app"
+BIN_PATH="$BIN_DIR/$APP_ID"
+DESKTOP_PATH="$APPS_DIR/$APP_ID.desktop"
+ICON_PATH="$ICON_DIR/$APP_ID.png"
+
+log() { printf '  %s\n' "$*"; }
+hr()  { printf '%s\n' '------------------------------------------------------------'; }
+die() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
+
+refresh_caches() {
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -q -t -f "$ICON_BASE" >/dev/null 2>&1 || true
+    fi
+}
+
+usage() {
+    cat <<EOF
+PenguinCraft $VERSION — установщик
+
+Использование:
+  sh \$0              установить или обновить лаунчер
+  sh \$0 --uninstall  удалить лаунчер
+  sh \$0 --help       эта справка
+
+Куда ставится (можно переопределить переменными окружения):
+  код          \$PREFIX
+  команда      \$BIN_PATH
+  пункт меню   \$DESKTOP_PATH
+  иконка       \$ICON_PATH
+
+Данные лаунчера (версии, экземпляры, аккаунты) хранятся в
+~/.local/share/penguincraft и при удалении не трогаются.
+EOF
+}
+
+uninstall() {
+    hr
+    log "Удаляю PenguinCraft $VERSION"
+    hr
+    rm -rf "$PREFIX"
+    rm -f "$BIN_PATH" "$DESKTOP_PATH" "$ICON_PATH"
+    refresh_caches
+    log "Код, команда, пункт меню и иконка удалены."
+    log "Данные игры оставлены: ~/.local/share/penguincraft"
+    hr
+}
+
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    --uninstall|--remove) uninstall; exit 0 ;;
+    "") ;;
+    *) die "неизвестный аргумент «$1» (см. --help)" ;;
+esac
+
+hr
+log "PenguinCraft $VERSION — установка"
+hr
+
+command -v python3 >/dev/null 2>&1 \
+    || die "не найден python3. Установите его: sudo apt install python3 python3-tk"
+
+PYV="$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
+log "Python: $PYV  ($(command -v python3))"
+
+TK_OK=1
+python3 -c 'import tkinter' >/dev/null 2>&1 || TK_OK=0
+if [ "$TK_OK" = "1" ]; then
+    log "tkinter: найден"
+else
+    log "tkinter: НЕ найден"
+    log "         графический интерфейс не запустится."
+    log "         установите: sudo apt install python3-tk"
+fi
+
+STAGE="$(mktemp -d "${TMPDIR:-/tmp}/$APP_ID.XXXXXX")"
+cleanup() { rm -rf "$STAGE"; }
+trap cleanup EXIT INT TERM
+
+MARK_LINE="$(awk '/^__PAYLOAD__$/ { print NR; exit }' "$0")"
+[ -n "$MARK_LINE" ] || die "повреждён установщик: не найден блок данных"
+
+tail -n "+$((MARK_LINE + 1))" "$0" | base64 -d | tar -xzf - -C "$STAGE" \
+    || die "не удалось распаковать данные установщика"
+
+[ -d "$STAGE/penguincraft" ] || die "повреждён установщик: нет каталога penguincraft"
+
+# --- код -------------------------------------------------------------
+rm -rf "$APP_DIR"
+mkdir -p "$APP_DIR"
+cp -a "$STAGE/." "$APP_DIR/"
+log "Код:     $APP_DIR"
+
+PYTHONPATH="$APP_DIR" python3 -c 'import penguincraft' >/dev/null 2>&1 \
+    || die "проверка не прошла: установленный код не импортируется"
+log "Проверка импорта: успешно"
+
+# --- команда ---------------------------------------------------------
+mkdir -p "$BIN_DIR"
+cat > "$BIN_PATH" <<EOF
+#!/bin/sh
+# Создано установщиком PenguinCraft $VERSION
+export PYTHONPATH="$APP_DIR"
+exec python3 -m penguincraft "\$@"
+EOF
+chmod 755 "$BIN_PATH"
+log "Команда: $BIN_PATH"
+
+# --- иконка ----------------------------------------------------------
+mkdir -p "$ICON_DIR"
+cp -f "$APP_DIR/penguincraft/ui/assets/$APP_ID.png" "$ICON_PATH" \
+    || die "не найдена иконка в установленном коде"
+log "Иконка:  $ICON_PATH"
+
+# --- пункт меню ------------------------------------------------------
+mkdir -p "$APPS_DIR"
+cat > "$DESKTOP_PATH" <<EOF
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=PenguinCraft
+GenericName=Minecraft Launcher
+Comment=Лёгкий лаунчер Minecraft для Linux и ChromeOS
+Comment[en]=Lightweight Minecraft launcher for Linux and ChromeOS
+Exec="$BIN_PATH" gui
+Icon=$ICON_PATH
+Terminal=false
+Categories=Game;ActionGame;
+Keywords=Minecraft;Game;Launcher;Mods;ChromeOS;
+StartupNotify=true
+StartupWMClass=Penguincraft
+EOF
+chmod 644 "$DESKTOP_PATH"
+log "Меню:    $DESKTOP_PATH"
+
+refresh_caches
+
+hr
+log "Готово! Запуск:"
+log "  • меню ChromeOS → «Linux-приложения» → PenguinCraft"
+log "  • или в терминале: $BIN_PATH"
+case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *)
+        log "Подсказка: добавьте в ~/.profile строку"
+        log "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+        log "чтобы работала просто команда penguincraft"
+        ;;
+esac
+hr
+
+exit 0
+
+__PAYLOAD__

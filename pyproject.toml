@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "penguincraft"
+version = "1.0.0"
+description = "Лёгкий лаунчер Minecraft для Linux и ChromeOS (только стандартная библиотека Python)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "PenguinCraft" }]
+keywords = ["minecraft", "launcher", "linux", "chromeos", "crostini", "fabric", "forge"]
+classifiers = [
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Volodymyr538/penguincraft"
+Repository = "https://github.com/Volodymyr538/penguincraft"
+Changelog = "https://github.com/Volodymyr538/penguincraft/blob/main/CHANGELOG.md"
+Issues = "https://github.com/Volodymyr538/penguincraft/issues"
+
+[project.optional-dependencies]
+# tkinter входит в стандартную библиотеку, но в некоторых дистрибутивах
+# поставляется отдельным пакетом (python3-tk).
+gui = []
+
+[project.scripts]
+penguincraft = "penguincraft.cli:main"
+
+[project.gui-scripts]
+penguincraft-gui = "penguincraft.cli:main"
+
+[tool.setuptools]
+packages = [
+    "penguincraft",
+    "penguincraft.auth",
+    "penguincraft.core",
+    "penguincraft.loaders",
+    "penguincraft.mods",
+    "penguincraft.ui",
+    "penguincraft.ui.views",
+]
+
+[tool.setuptools.package-data]
+"penguincraft.ui" = ["assets/*.png"]
