@@ -4,6 +4,38 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии — по [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [1.4.0] — 2026-10-19
+
+### Изменено
+
+- **Каталог игры теперь называется `.minecraft`** — как у всех.
+  Раньше данные экземпляра лежали в `instances/<имя>/game/`, и понять
+  «где тут моды» можно было только по документации. Теперь структура
+  знакома любому игроку: открываете папку нужной версии, внутри —
+  `.minecraft`, а в нём `mods/`, `config/`, `saves/`, `resourcepacks/`,
+  `shaderpacks/`.
+
+  ```
+  instances/1.20.1 Fabric/
+  ├── .minecraft/
+  │   ├── mods/
+  │   ├── config/
+  │   ├── saves/
+  │   ├── resourcepacks/
+  │   └── shaderpacks/
+  └── instance.json
+  ```
+
+  Это то же имя, что у официального лаунчера (`%APPDATA%\.minecraft`,
+  `~/.minecraft`) и у Prism Launcher / MultiMC, которые тоже отводят
+  каждому экземпляру свой `.minecraft`.
+
+- Прежний каталог `game/` **переносится автоматически** при первом запуске
+  (обычное переименование, файлы не теряются). Архивы экземпляров,
+  сделанные до 1.4.0, по-прежнему импортируются.
+- На странице «Экземпляры» под кнопкой «Открыть каталог» показан путь:
+  `instances/<имя>/.minecraft`.
+
 ## [1.3.0] — 2026-10-19
 
 ### Добавлено
@@ -152,6 +184,7 @@
 - Иконки проектов Modrinth отображаются, только если они в формате PNG;
   webp/jpeg пропускаются без ошибки.
 
+[1.4.0]: https://github.com/Volodymyr538/penguincraft/releases/tag/v1.4.0
 [1.3.0]: https://github.com/Volodymyr538/penguincraft/releases/tag/v1.3.0
 [1.1.0]: https://github.com/Volodymyr538/penguincraft/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Volodymyr538/penguincraft/releases/tag/v1.0.0

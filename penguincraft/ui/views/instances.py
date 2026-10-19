@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 from typing import Dict, List, Optional
 
+from ...core.paths import GAME_DIR
 from ...core.util import human_size
 from ..widgets import Card, Table, ask_string, ask_yes_no, show_error, show_info
 from .base import BaseView
@@ -583,6 +584,14 @@ class InstancesView(BaseView):
         ttk.Button(actions, text="Проверить обновления", command=self._check_updates).pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="Бэкап миров…", command=self._backup_worlds).pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="Открыть каталог", style="Ghost.TButton", command=self._open_dir).pack(fill="x", pady=(8, 0))
+        self.folder_hint = ttk.Label(
+            actions,
+            text="",
+            style="CardMuted.TLabel",
+            justify="left",
+            wraplength=270,
+        )
+        self.folder_hint.pack(anchor="w", pady=(6, 0))
 
     # ------------------------------------------------------------------
     def reload(self) -> None:
@@ -613,6 +622,7 @@ class InstancesView(BaseView):
         instance = self._current()
         if instance is None:
             self.detail_info.configure(text="Экземпляр не выбран")
+            self.folder_hint.configure(text="")
             self.play_button.configure(state="disabled")
             return
         mods = len(list(self.manager.instances.mods_dir(instance.name).glob("*.jar")))
@@ -629,6 +639,10 @@ class InstancesView(BaseView):
         if instance.notes:
             lines += ["", instance.notes]
         self.detail_info.configure(text="\n".join(lines))
+        # Показываем, куда именно ведёт кнопка: «папка игры» — это
+        # привычный .minecraft, внутри него mods/, saves/ и т.д.
+        relative = f"instances/{instance.name}/{GAME_DIR}"
+        self.folder_hint.configure(text=f"Папка игры: {relative}")
         self.play_button.configure(state=("disabled" if self.manager.game_running else "!disabled"))
 
     # ------------------------------------------------------------------

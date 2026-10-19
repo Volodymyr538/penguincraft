@@ -14,8 +14,13 @@
             objects/<ab>/<hash>
             virtual/legacy/... (для очень старых версий)
         runtimes/<major>/      автоматически скачанные JRE
-        instances/<name>/      отдельный "домашний" каталог игры
-            game/              то, что видит Minecraft как gameDirectory
+        instances/<имя>/       отдельный экземпляр игры
+            .minecraft/        то, что видит Minecraft как gameDirectory
+                mods/          моды (для Fabric/Forge/…)
+                saves/         миры
+                config/        настройки модов
+                resourcepacks/
+                shaderpacks/
             instance.json      метаданные экземпляра
 """
 
@@ -23,6 +28,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import List
 
 from .. import APP_ID, APP_NAME
 from .util import is_windows
@@ -34,6 +40,16 @@ ENV_ROOT = "PENGUINCRAFT_HOME"
 SETTINGS_FILE = "settings.json"
 #: Имя файла аккаунтов.
 ACCOUNTS_FILE = "accounts.json"
+
+#: Как называется «домашний» каталог игры внутри экземпляра.
+#: ``.minecraft`` — это то самое имя, которое знает любой игрок: так
+#: называлась папка у официального лаунчера (``%APPDATA%\.minecraft``,
+#: ``~/.minecraft``) и так же поступают Prism/MultiMC, отводя каждому
+#: экземпляру собственный ``.minecraft``.
+GAME_DIR = ".minecraft"
+
+#: Прежнее имя того же каталога (до 1.4.0) — нужно для переноса данных.
+LEGACY_GAME_DIR = "game"
 
 
 def default_root() -> Path:
@@ -126,7 +142,35 @@ class Paths:
         return self.instances / name
 
     def instance_game_dir(self, name: str) -> Path:
-        return self.instance_dir(name) / "game"
+        """Каталог игры экземпляра — привычный ``.minecraft``."""
+        return self.instance_dir(name) / GAME_DIR
+
+    def instance_legacy_game_dir(self, name: str) -> Path:
+        """Прежнее имя каталога игры (``game``) — только для переноса."""
+        return self.instance_dir(name) / LEGACY_GAME_DIR
+
+    def migrate_legacy_game_dirs(self) -> List[str]:
+        """Переименовывает ``game`` -> ``.minecraft`` в старых экземплярах.
+
+        Возвращает имена перенесённых экземпляров.  Если ``.minecraft`` уже
+        есть, каталог не трогаем — данные пользователя важнее.
+        """
+        renamed: List[str] = []
+        if not self.instances.is_dir():
+            return renamed
+        for entry in sorted(self.instances.iterdir()):
+            if not entry.is_dir():
+                continue
+            legacy = entry / LEGACY_GAME_DIR
+            current = entry / GAME_DIR
+            if current.exists() or not legacy.is_dir():
+                continue
+            try:
+                legacy.rename(current)
+            except OSError:
+                continue
+            renamed.append(entry.name)
+        return renamed
 
     def instance_json(self, name: str) -> Path:
         return self.instance_dir(name) / "instance.json"

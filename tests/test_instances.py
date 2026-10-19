@@ -176,6 +176,60 @@ class WorldTests(unittest.TestCase):
             self.assertEqual(_world_root(wrapper), nested)
 
 
+class GameDirLayoutTests(unittest.TestCase):
+    """Каталог игры называется ``.minecraft`` — как у всех лаунчеров."""
+
+    def test_game_dir_is_dot_minecraft(self) -> None:
+        with TemporaryDirectory() as tmp:
+            manager = make_manager(tmp)
+            manager.create("A", version_id="1.20.1")
+            game = manager.game_dir("A")
+            self.assertEqual(game.name, ".minecraft")
+            self.assertEqual(game.parent, manager.paths.instance_dir("A"))
+            # Настройки экземпляра лежат рядом, а не внутри .minecraft.
+            self.assertTrue(manager.paths.instance_json("A").is_file())
+
+    def test_mods_dir_inside_dot_minecraft(self) -> None:
+        with TemporaryDirectory() as tmp:
+            manager = make_manager(tmp)
+            manager.create("A", version_id="1.20.1")
+            self.assertEqual(manager.mods_dir("A").parts[-2:], (".minecraft", "mods"))
+
+    def test_migration_renames_legacy_game_dir(self) -> None:
+        with TemporaryDirectory() as tmp:
+            manager = make_manager(tmp)
+            manager.create("A", version_id="1.20.1")
+            (manager.mods_dir("A") / "x.jar").write_bytes(b"jar")
+            # Откатываемся к раскладке до 1.4.0.
+            legacy = manager.paths.instance_legacy_game_dir("A")
+            manager.game_dir("A").rename(legacy)
+            self.assertTrue(legacy.is_dir())
+
+            renamed = manager.paths.migrate_legacy_game_dirs()
+            self.assertEqual(renamed, ["A"])
+            self.assertTrue((manager.mods_dir("A") / "x.jar").is_file())
+            self.assertFalse(legacy.exists())
+
+    def test_migration_is_idempotent(self) -> None:
+        with TemporaryDirectory() as tmp:
+            manager = make_manager(tmp)
+            manager.create("A", version_id="1.20.1")
+            self.assertEqual(manager.paths.migrate_legacy_game_dirs(), [])
+
+    def test_migration_keeps_existing_dot_minecraft(self) -> None:
+        with TemporaryDirectory() as tmp:
+            manager = make_manager(tmp)
+            manager.create("A", version_id="1.20.1")
+            (manager.mods_dir("A") / "new.jar").write_bytes(b"new")
+            legacy = manager.paths.instance_legacy_game_dir("A")
+            legacy.mkdir(parents=True)
+            (legacy / "old.jar").write_bytes(b"old")
+
+            self.assertEqual(manager.paths.migrate_legacy_game_dirs(), [])
+            self.assertTrue((manager.mods_dir("A") / "new.jar").is_file())
+            self.assertTrue((legacy / "old.jar").is_file())
+
+
 class ExportImportInstanceTests(unittest.TestCase):
     def test_export_and_import(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -191,6 +245,37 @@ class ExportImportInstanceTests(unittest.TestCase):
             self.assertEqual(imported.display_name, "Импорт")
             self.assertTrue((manager.mods_dir(imported.name) / "x.jar").is_file())
             self.assertTrue((manager.saves_dir(imported.name) / "Мир" / "level.dat").is_file())
+
+    def test_export_uses_dot_minecraft_folder(self) -> None:
+        with TemporaryDirectory() as tmp:
+            manager = make_manager(tmp)
+            manager.create("A", version_id="1.20.1")
+            (manager.mods_dir("A") / "x.jar").write_bytes(b"jar")
+            archive = Path(tmp) / "instance.zip"
+            manager.export_archive("A", archive)
+            with zipfile.ZipFile(archive) as zf:
+                names = zf.namelist()
+            self.assertIn("instance.json", names)
+            self.assertTrue(any(name.startswith(".minecraft/mods/") for name in names))
+            self.assertFalse(any(name.startswith("game/") for name in names))
+
+    def test_import_archive_made_before_1_4_0(self) -> None:
+        """Старые архивы хранили каталог как ``game/`` — их надо понимать."""
+        with TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "legacy.zip"
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr(
+                    "instance.json",
+                    '{"name": "Old", "display_name": "Старый", "version_id": "1.20.1"}',
+                )
+                zf.writestr("game/mods/legacy.jar", "jar")
+                zf.writestr("game/saves/Мир/level.dat", "level")
+            manager = make_manager(tmp)
+            imported = manager.import_archive(archive, display_name="Из 1.3.0")
+            self.assertTrue((manager.mods_dir(imported.name) / "legacy.jar").is_file())
+            self.assertTrue(
+                (manager.saves_dir(imported.name) / "Мир" / "level.dat").is_file()
+            )
 
     def test_import_not_an_instance(self) -> None:
         with TemporaryDirectory() as tmp:

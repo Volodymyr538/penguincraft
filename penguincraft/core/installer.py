@@ -229,7 +229,7 @@ def install_version(
     """Готовит версию к запуску и возвращает план запуска."""
     paths.ensure_base_dirs()
     repo = repository or VersionRepository(paths, http)
-    game_dir = Path(game_dir) if game_dir else paths.instances / "default" / "game"
+    game_dir = Path(game_dir) if game_dir else paths.instance_game_dir("default")
     game_dir.mkdir(parents=True, exist_ok=True)
 
     top = reporter.child(start=0.0, span=1.0) if reporter else None

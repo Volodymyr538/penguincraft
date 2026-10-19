@@ -67,8 +67,8 @@
 
 | Файл | Что это |
 |---|---|
-| `PenguinCraft-1.3.0-setup.exe` | обычный установщик (права администратора не нужны) |
-| `PenguinCraft-1.3.0-portable.exe` | один файл, ничего не устанавливает |
+| `PenguinCraft-1.4.0-setup.exe` | обычный установщик (права администратора не нужны) |
+| `PenguinCraft-1.4.0-portable.exe` | один файл, ничего не устанавливает |
 
 Установщик кладёт лаунчер в `%LOCALAPPDATA%\Programs\PenguinCraft`,
 добавляет ярлыки и удаляется штатным образом через «Установка и удаление
@@ -97,8 +97,8 @@ sudo apt install -y python3 python3-tk
 добавляет пункт в меню «Linux-приложения»:
 
 ```bash
-sh PenguinCraft-1.3.0-installer.sh              # установить или обновить
-sh PenguinCraft-1.3.0-installer.sh --uninstall  # удалить
+sh PenguinCraft-1.4.0-installer.sh              # установить или обновить
+sh PenguinCraft-1.4.0-installer.sh --uninstall  # удалить
 ```
 
 Запуск — из меню ChromeOS (`Linux-приложения` → PenguinCraft) или командой
@@ -114,7 +114,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ### Вариант 2 — пакет .deb (системная установка)
 
 ```bash
-sudo apt install ./penguincraft_1.3.0_all.deb
+sudo apt install ./penguincraft_1.4.0_all.deb
 penguincraft            # или из меню приложений
 sudo apt remove penguincraft
 ```
@@ -185,7 +185,7 @@ python packaging\windows\build.py --portable-only   # только перено�
 Linux-сборке, без сторонних библиотек.
 
 Всё это автоматически собирает workflow
-`.github/workflows/windows.yml`; по тегу вида `v1.3.0` файлы `.exe`
+`.github/workflows/windows.yml`; по тегу вида `v1.4.0` файлы `.exe`
 прикладываются к релизу.
 
 
@@ -262,17 +262,42 @@ penguincraft update-mods
 
 ```
 <каталог данных>/
-├── settings.json          настройки
-├── accounts.json          аккаунты (права 600)
-├── versions/              описания и клиентские jar'ы версий
-├── libraries/             общие библиотеки (maven-раскладка)
-├── assets/                ресурсы игры
-├── runtimes/              автоматически скачанные JRE
-├── instances/<имя>/
-│   ├── game/              то, что видит Minecraft как gameDirectory
-│   └── instance.json      описание экземпляра
-└── logs/                  журналы запусков
+├── settings.json              настройки
+├── accounts.json              аккаунты (права 600)
+├── versions/                  описания и клиентские jar'ы версий
+├── libraries/                 общие библиотеки (maven-раскладка)
+├── assets/                    ресурсы игры
+├── runtimes/                  автоматически скачанные JRE
+├── logs/                      журналы запусков
+└── instances/
+    └── 1.20.1 Fabric/         «нужная версия», которую вы открываете
+        ├── .minecraft/        домашний каталог игры
+        │   ├── mods/          моды
+        │   ├── config/        настройки модов
+        │   ├── saves/         миры
+        │   ├── resourcepacks/ ресурспаки
+        │   ├── shaderpacks/   шейдеры
+        │   ├── logs/          журналы самой игры
+        │   └── options.txt
+        └── instance.json      описание экземпляра (версия, загрузчик)
 ```
+
+Экземпляр = один «домашний» каталог игры. Внутренний каталог называется
+`.minecraft` намеренно: это **то самое имя, которое знает любой игрок** —
+так называлась папка у официального лаунчера (`%APPDATA%\.minecraft`,
+`~/.minecraft`), и так же делают Prism Launcher и MultiMC, отводя каждому
+экземпляру собственный `.minecraft`. Поэтому моды, миры и настройки лежат
+ровно там, где их ожидаешь найти.
+
+В Linux `.minecraft` — скрытый каталог (как и обычный `~/.minecraft`):
+включите показ скрытых файлов (`Ctrl+H` в файловом менеджере) или просто
+нажмите **Открыть каталог** на странице «Экземпляры». В Windows каталог
+виден как обычно.
+
+> **Обновление с 1.3.0 и раньше.** Прежний каталог `game/` переносится в
+> `.minecraft/` автоматически при первом запуске новой версии. Это
+> переименование: моды, миры и настройки остаются на месте. Архивы
+> экземпляров, сделанные старой версией, тоже импортируются.
 
 ---
 

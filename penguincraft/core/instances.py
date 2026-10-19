@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from .paths import Paths
+from .paths import GAME_DIR, LEGACY_GAME_DIR, Paths
 from .settings import InstanceConfig, Settings
 from .util import copy_tree, extract_zip, remove_tree, sanitize_name
 
@@ -178,7 +178,7 @@ class InstanceManager:
             raise InstanceError(f"Экземпляр «{name}» не найден")
         if keep_mods:
             backup = self.paths.cache / "deleted-instances" / f"{name}-{int(time.time())}"
-            mods = directory / "game" / "mods"
+            mods = self.paths.instance_game_dir(name) / "mods"
             if mods.is_dir():
                 backup.mkdir(parents=True, exist_ok=True)
                 try:
@@ -406,7 +406,7 @@ class InstanceManager:
         exclude: Iterable[str] = EXPORT_EXCLUDE,
         reporter=None,
     ) -> Path:
-        """Складывает экземпляр в zip-архив (``instance.json`` + ``game/``)."""
+        """Складывает экземпляр в zip-архив (``instance.json`` + ``.minecraft/``)."""
         directory = self.paths.instance_dir(name)
         if not directory.is_dir():
             raise InstanceError(f"Экземпляр «{name}» не найден")
@@ -428,7 +428,7 @@ class InstanceManager:
                         relative = path.relative_to(game)
                         if relative.parts and relative.parts[0] in excluded:
                             continue
-                        archive.write(path, f"game/{relative.as_posix()}")
+                        archive.write(path, f"{GAME_DIR}/{relative.as_posix()}")
                         count += 1
                         if reporter and count % 50 == 0:
                             reporter.status(f"Экспорт: {count} файлов…")
@@ -465,9 +465,12 @@ class InstanceManager:
             name = self.unique_name(wanted)
             target_dir = self.paths.instance_dir(name)
             target_dir.mkdir(parents=True, exist_ok=True)
-            game_source = staging / "game"
+            game_source = staging / GAME_DIR
+            if not game_source.is_dir():
+                # Архивы, сделанные до 1.4.0, хранили каталог как ``game/``.
+                game_source = staging / LEGACY_GAME_DIR
             if game_source.is_dir():
-                copy_tree(game_source, target_dir / "game")
+                copy_tree(game_source, target_dir / GAME_DIR)
             source.name = name
             source.display_name = wanted
             source.created_at = time.strftime("%Y-%m-%dT%H:%M:%S")

@@ -49,6 +49,10 @@ class LauncherManager:
     def __init__(self, root: Path | str | None = None) -> None:
         self.paths = Paths(root)
         self.paths.ensure_base_dirs()
+        # Экземпляры, созданные до 1.4.0, хранили каталог игры как ``game/``.
+        # Переносим его в привычный ``.minecraft/`` — это обычное
+        # переименование, файлы остаются на месте.
+        self.paths.migrate_legacy_game_dirs()
         self.settings = Settings.load(self.paths)
         self.http = Http(proxy=self.settings.proxy or None)
         self.accounts = AccountStore(self.paths.accounts)
