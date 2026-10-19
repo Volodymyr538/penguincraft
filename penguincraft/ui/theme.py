@@ -340,6 +340,8 @@ class Theme:
         style.map("Card.TCheckbutton", background=[("active", c["panel"])])
         style.configure("TRadiobutton", background=c["bg"], foreground=c["text"])
         style.map("TRadiobutton", background=[("active", c["bg"])])
+        style.configure("Card.TRadiobutton", background=c["panel"], foreground=c["text"], focuscolor=c["panel"])
+        style.map("Card.TRadiobutton", background=[("active", c["panel"])])
 
         # -- прогресс -----------------------------------------------------
         style.configure(

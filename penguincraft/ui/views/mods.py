@@ -24,6 +24,9 @@ class ModsView(BaseView):
         self._hits: Dict[str, object] = {}
         self._mods: Dict[str, object] = {}
         self._updates: Dict[str, object] = {}
+        self._offset = 0
+        self._total = 0
+        self._last_query = ""
 
         # --- выбор экземпляра --------------------------------------------
         top = ttk.Frame(page, style="TFrame")
@@ -56,6 +59,18 @@ class ModsView(BaseView):
         )
         self.type_combo.current(0)
         self.type_combo.pack(side="left", padx=(8, 0))
+        self.sort_combo = ttk.Combobox(
+            bar, state="readonly", width=16,
+            values=["По релевантности", "По загрузкам", "По новизне", "По подпискам"],
+        )
+        self.sort_combo.current(0)
+        self.sort_combo.pack(side="left", padx=(8, 0))
+        self.sort_combo.bind("<<ComboboxSelected>>", lambda _e: self._search())
+        self.deps_var = tk.BooleanVar(value=bool(self.settings.install_dependencies))
+        ttk.Checkbutton(
+            bar, text="Зависимости", variable=self.deps_var,
+            command=self._deps_toggled,
+        ).pack(side="left", padx=(8, 0))
 
         self.results = Table(
             search_tab,
@@ -76,6 +91,9 @@ class ModsView(BaseView):
         actions.pack(fill="x", pady=(10, 0))
         ttk.Button(actions, text="Установить выбранный", style="Accent.TButton", command=self._install_selected).pack(side="left")
         ttk.Button(actions, text="Открыть страницу", command=self._open_page).pack(side="left", padx=(8, 0))
+        self.more_button = ttk.Button(actions, text="Показать ещё", command=self._search_more)
+        self.more_button.pack(side="left", padx=(8, 0))
+        self.more_button.state(["disabled"])
         self.search_status = ttk.Label(actions, text="", style="Muted.TLabel")
         self.search_status.pack(side="right")
 
@@ -117,6 +135,21 @@ class ModsView(BaseView):
         ttk.Button(local_actions, text="Обновить выбранный", style="Accent.TButton", command=self._update_selected).pack(side="left", padx=(8, 0))
         ttk.Button(local_actions, text="Обновить", style="Ghost.TButton", command=self.reload).pack(side="right")
 
+        more_actions = ttk.Frame(local_tab, style="TFrame")
+        more_actions.pack(fill="x", pady=(6, 0))
+        ttk.Button(
+            more_actions, text="Сопоставить с Modrinth",
+            style="Ghost.TButton", command=self._match_manual,
+        ).pack(side="left")
+        ttk.Button(
+            more_actions, text="Проверить зависимости",
+            style="Ghost.TButton", command=self._check_dependencies,
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            more_actions, text="Обновить всё",
+            style="Ghost.TButton", command=self._update_all,
+        ).pack(side="left", padx=(8, 0))
+
         self.local_status = ttk.Label(local_tab, text="", style="Muted.TLabel")
         self.local_status.pack(anchor="w", pady=(6, 0))
 
@@ -131,6 +164,7 @@ class ModsView(BaseView):
 
     def reload(self) -> None:
         self._instances = self.manager.instances.list()
+        self.deps_var.set(bool(self.settings.install_dependencies))
         names = [instance.display_name for instance in self._instances]
         self.instance_var.configure(values=names)
         if names and not self.instance_var.get():
@@ -228,7 +262,22 @@ class ModsView(BaseView):
             open_in_file_manager(directory)
 
     # ------------------------------------------------------------------
-    def _search(self) -> None:
+    def _sort_index(self) -> str:
+        return {
+            "По релевантности": "relevance",
+            "По загрузкам": "downloads",
+            "По новизне": "newest",
+            "По подпискам": "follows",
+        }.get(self.sort_combo.get(), "relevance")
+
+    def _deps_toggled(self) -> None:
+        self.settings.install_dependencies = bool(self.deps_var.get())
+        try:
+            self.manager.save_settings()
+        except OSError:
+            pass
+
+    def _search(self, *, offset: int = 0, append: bool = False) -> None:
         instance = self._current_instance()
         loader = instance.loader if instance and instance.loader != "vanilla" else ""
         game_version = (instance.game_version or instance.version_id) if instance else ""
@@ -237,7 +286,9 @@ class ModsView(BaseView):
         # загрузчику к ним не применяем — иначе поиск почти всегда пуст.
         loaders = [loader] if (loader and project_type == "mod") else []
         query = self.query_var.get().strip()
+        index = self._sort_index()
         self.search_status.configure(text="Поиск…")
+        self.more_button.state(["disabled"])
 
         def work(reporter):
             result = self.manager.modrinth.search(
@@ -245,25 +296,42 @@ class ModsView(BaseView):
                 project_type=project_type,
                 loaders=loaders,
                 game_versions=[game_version] if game_version else [],
+                index=index,
                 limit=40,
+                offset=offset,
             )
             self.resolve_icons(result.hits)
             return result
 
         def done(result) -> None:
-            self._hits.clear()
-            self.results.clear()
+            if not append:
+                self._hits.clear()
+                self.results.clear()
             for hit in result.hits:
                 iid = hit.project_id or hit.slug
+                if not iid:
+                    continue
                 self._hits[iid] = hit
                 self.results.add(
                     iid,
                     (hit.title, format_downloads(hit.downloads), ", ".join(hit.loaders), hit.description),
                 )
-            self.search_status.configure(text=f"Найдено: {result.total}")
+            self._offset = result.offset + len(result.hits)
+            self._total = result.total
+            self._last_query = query
+            shown = self.results.count()
+            text = f"Показано: {shown} из {result.total}"
+            self.search_status.configure(text=text)
+            if shown < result.total and result.hits:
+                self.more_button.state(["!disabled"])
             self._load_icons()
 
         self.run_task("Поиск в Modrinth", work, on_done=done)
+
+    def _search_more(self) -> None:
+        if self._offset <= 0:
+            return
+        self._search(offset=self._offset, append=True)
 
     def _load_icons(self) -> None:
         for iid, hit in list(self._hits.items()):
@@ -299,14 +367,22 @@ class ModsView(BaseView):
             show_info(self.app, "Выберите проект в списке.")
             return
         project_type = self._project_type()
+        with_deps = bool(self.deps_var.get())
 
         def work(reporter):
-            return self.manager.install_project_from_modrinth(
-                instance, hit.project_id, project_type=project_type, reporter=reporter
+            return self.manager.install_project_with_dependencies(
+                instance,
+                hit.project_id,
+                project_type=project_type,
+                with_dependencies=with_deps,
+                reporter=reporter,
             )
 
-        def done(path) -> None:
+        def done(result) -> None:
+            path, deps = result
             self.log(f"Установлено в {path.parent.name}: {path.name}")
+            if deps:
+                self.log(f"Вместе с зависимостями: {len(deps)} шт.")
             self._refresh_local()
 
         self.run_task(f"Установка «{hit.title}»", work, on_done=done)
@@ -320,19 +396,131 @@ class ModsView(BaseView):
         self.local_status.configure(text="Проверка обновлений…")
 
         def work(reporter):
-            return self.manager.check_project_updates(instance)
+            reporter.status("Сопоставление файлов с Modrinth…")
+            matched = self.manager.match_manual_mods(instance, reporter=reporter)
+            found = self.manager.check_project_updates(instance)
+            return found, matched
 
-        def done(found) -> None:
+        def done(result) -> None:
+            found, matched = result
             self._updates = {
                 record.filename: (record, version) for record, version in found
             }
             self._refresh_local()
+            if matched:
+                self.log(f"Сопоставлено с Modrinth: {len(matched)}")
             if found:
                 self.log(f"Доступно обновлений: {len(found)}")
             else:
                 show_info(self.app, "Обновлений нет — все проекты актуальны.")
 
         self.run_task("Проверка обновлений", work, on_done=done)
+
+    def _match_manual(self) -> None:
+        instance = self._current_instance()
+        if instance is None:
+            show_info(self.app, "Сначала создайте экземпляр.")
+            return
+
+        def work(reporter):
+            return self.manager.match_manual_mods(
+                instance, reporter=reporter, include_resourcepacks=True
+            )
+
+        def done(found) -> None:
+            if not found:
+                show_info(
+                    self.app,
+                    "Ни один файл не найден в базе Modrinth.\n"
+                    "Обычно это означает, что мод не опубликован на Modrinth — "
+                    "обновлять его придётся вручную.",
+                    "Сопоставление",
+                )
+                return
+            lines = [f"• {name} → {pid}" for name, pid in sorted(found.items())]
+            show_info(
+                self.app,
+                f"Найдено в Modrinth: {len(found)}\n\n" + "\n".join(lines[:25]),
+                "Сопоставление с Modrinth",
+            )
+            self._refresh_local()
+
+        self.run_task("Сопоставление с Modrinth", work, on_done=done)
+
+    def _check_dependencies(self) -> None:
+        instance = self._current_instance()
+        if instance is None:
+            show_info(self.app, "Сначала создайте экземпляр.")
+            return
+
+        def work(reporter):
+            return self.manager.check_instance_health(instance)
+
+        def done(report) -> None:
+            if not report:
+                show_info(self.app, "Проблем с зависимостями не найдено.")
+                return
+            titles = {
+                "missing": "Нет обязательных зависимостей",
+                "disabled": "Зависимость выключена",
+                "conflicts": "Несовместимые проекты",
+                "loaders": "Мод другого загрузчика",
+            }
+            lines = []
+            for key in ("missing", "disabled", "conflicts", "loaders"):
+                items = report.get(key) or []
+                if not items:
+                    continue
+                lines.append(f"{titles[key]}:")
+                lines.extend(f"  • {item}" for item in items)
+                lines.append("")
+            show_info(self.app, "\n".join(lines).strip(), "Зависимости и совместимость")
+
+        self.run_task("Проверка зависимостей", work, on_done=done)
+
+    def _update_all(self) -> None:
+        instance = self._current_instance()
+        if instance is None:
+            show_info(self.app, "Сначала создайте экземпляр.")
+            return
+        if self._current_instance() is None:
+            return
+        self.local_status.configure(text="Проверка обновлений…")
+
+        def work(reporter):
+            reporter.status("Сопоставление файлов с Modrinth…")
+            self.manager.match_manual_mods(instance, reporter=reporter)
+            found = self.manager.check_project_updates(instance)
+            updated = 0
+            failed = 0
+            for record, version in found:
+                reporter.check_cancel()
+                try:
+                    self.manager.update_project(
+                        instance, record, version=version, reporter=reporter
+                    )
+                except Exception as error:  # noqa: BLE001
+                    failed += 1
+                    reporter.log(f"Не удалось обновить «{record.title or record.filename}»: {error}")
+                    continue
+                updated += 1
+            return updated, failed, len(found)
+
+        def done(result) -> None:
+            updated, failed, total = result
+            self._updates.clear()
+            self._refresh_local()
+            if total == 0:
+                show_info(self.app, "Обновлений нет — все проекты актуальны.")
+            else:
+                show_info(
+                    self.app,
+                    f"Обновлено: {updated} из {total}."
+                    + (f"\nОшибок: {failed}." if failed else ""),
+                    "Обновление модов",
+                )
+
+        self.run_task("Обновление всех модов", work, on_done=done)
 
     def _update_selected(self) -> None:
         instance = self._current_instance()

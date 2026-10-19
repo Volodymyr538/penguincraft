@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import messagebox, ttk
-from typing import Callable, Iterable, Optional, Sequence
+from typing import Callable, Iterable, List, Optional, Sequence
 
 from .theme import Theme
 
@@ -325,6 +325,67 @@ class LogView(ttk.Frame):
 # ---------------------------------------------------------------------------
 # Плитка-«чип» со значением
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Просмотр отчётов о падениях
+# ---------------------------------------------------------------------------
+
+
+class CrashReportWindow(tk.Toplevel):
+    """Окно с текстом отчёта о падении и кнопками «открыть»/«сохранить»."""
+
+    def __init__(self, app, path, theme: Optional[Theme] = None) -> None:
+        from pathlib import Path
+
+        super().__init__(app)
+        self.app = app
+        self.path = Path(path)
+        self.theme = theme or app.theme
+        self.title(f"Отчёт о падении — {self.path.name}")
+        self.transient(app)
+        self.geometry("900x620")
+        self.minsize(600, 400)
+
+        body = ttk.Frame(self, style="TFrame", padding=12)
+        body.pack(fill="both", expand=True)
+
+        header = ttk.Frame(body, style="TFrame")
+        header.pack(fill="x", pady=(0, 8))
+        ttk.Label(header, text=str(self.path), style="Muted.TLabel").pack(side="left")
+
+        view = LogView(body, self.theme, max_lines=20000)
+        view.pack(fill="both", expand=True)
+        view.append_many(self._read_lines())
+
+        actions = ttk.Frame(body, style="TFrame")
+        actions.pack(fill="x", pady=(10, 0))
+        ttk.Button(actions, text="Закрыть", command=self.destroy).pack(side="right")
+        ttk.Button(actions, text="Открыть папку", command=self._open_folder).pack(side="right", padx=(8, 0))
+        ttk.Button(actions, text="Скопировать всё", command=self._copy).pack(side="right", padx=(8, 0))
+        self._view = view
+
+    def _read_lines(self) -> list:
+        try:
+            text = self.path.read_text(encoding="utf-8", errors="replace")
+        except OSError as error:
+            return [f"Не удалось прочитать файл: {error}"]
+        lines = text.splitlines()
+        if len(lines) > 4000:
+            lines = lines[:4000] + ["", f"… всего строк: {len(lines)}"]
+        return lines
+
+    def _open_folder(self) -> None:
+        from ..core.util import open_in_file_manager
+
+        open_in_file_manager(self.path.parent)
+
+    def _copy(self) -> None:
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self._view.get_all())
+        except tk.TclError:  # pragma: no cover
+            pass
 
 
 class StatTile(ttk.Frame):

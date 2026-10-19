@@ -28,16 +28,21 @@ class InstalledProject:
     installed_at: float = 0.0
     #: Список файлов, поставленных модпаком (только для записи модпака).
     files: List[str] = field(default_factory=list)
+    #: Обязательные зависимости (id проектов Modrinth).
+    requires: List[str] = field(default_factory=list)
+    #: Несовместимые проекты (id проектов Modrinth).
+    incompatible: List[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "InstalledProject":
         known = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
         data: Dict[str, Any] = {key: value for key, value in raw.items() if key in known}
-        files = data.get("files")
-        if isinstance(files, list):
-            data["files"] = [str(item) for item in files]
-        else:
-            data.pop("files", None)
+        for key in ("files", "requires", "incompatible"):
+            value = data.get(key)
+            if isinstance(value, list):
+                data[key] = [str(item) for item in value]
+            else:
+                data.pop(key, None)
         try:
             return cls(**data)
         except TypeError:

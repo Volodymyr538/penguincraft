@@ -26,6 +26,8 @@ class LocalMod:
     authors: List[str] = field(default_factory=list)
     loader: str = ""
     error: str = ""
+    #: Обязательные зависимости: ``mod_id → диапазон версий``.
+    depends: Dict[str, str] = field(default_factory=dict)
 
     @property
     def filename(self) -> str:
@@ -78,7 +80,10 @@ def _read_entry(archive: zipfile.ZipFile, name: str) -> Optional[bytes]:
 def parse_mod_metadata(path: Path | str) -> Dict[str, Any]:
     """Достаёт метаданные мода из jar-файла (или папки)."""
     target = Path(path)
-    result: Dict[str, Any] = {"loader": "", "name": "", "id": "", "version": "", "description": "", "authors": []}
+    result: Dict[str, Any] = {
+        "loader": "", "name": "", "id": "", "version": "",
+        "description": "", "authors": [], "depends": {},
+    }
     if target.is_dir():
         return result
     try:
@@ -124,6 +129,7 @@ def _parse_fabric_json(raw: bytes, loader: str) -> Dict[str, Any]:
     authors = data.get("authors") or []
     if isinstance(authors, list) and authors and isinstance(authors[0], Mapping):
         authors = [str(item.get("name") or "") for item in authors if isinstance(item, Mapping)]
+    depends = data.get("depends") or {}
     return {
         "loader": loader,
         "name": str(data.get("name") or data.get("id") or ""),
@@ -131,6 +137,11 @@ def _parse_fabric_json(raw: bytes, loader: str) -> Dict[str, Any]:
         "version": str(data.get("version") or ""),
         "description": str(data.get("description") or ""),
         "authors": [str(item) for item in authors if item],
+        "depends": {
+            str(key): str(value)
+            for key, value in depends.items()
+            if isinstance(depends, Mapping)
+        },
     }
 
 
@@ -140,6 +151,16 @@ def _parse_quilt_json(raw: bytes) -> Dict[str, Any]:
     metadata = loader_block.get("metadata") or {}
     contributors = metadata.get("contributors") or {}
     authors = list(contributors.values()) if isinstance(contributors, Mapping) else []
+    depends: Dict[str, str] = {}
+    raw_depends = loader_block.get("depends") or []
+    if isinstance(raw_depends, list):
+        for item in raw_depends:
+            if isinstance(item, Mapping):
+                mod_id = str(item.get("id") or "")
+                if mod_id:
+                    depends[mod_id] = str(item.get("versions") or item.get("version") or "")
+            elif isinstance(item, str) and item:
+                depends[item] = ""
     return {
         "loader": "quilt",
         "name": str(metadata.get("name") or loader_block.get("id") or ""),
@@ -147,6 +168,7 @@ def _parse_quilt_json(raw: bytes) -> Dict[str, Any]:
         "version": str(loader_block.get("version") or ""),
         "description": str(metadata.get("description") or ""),
         "authors": [str(item) for item in authors if item],
+        "depends": depends,
     }
 
 
@@ -154,6 +176,27 @@ _TOML_MODID = re.compile(r'^\s*modId\s*=\s*"([^"]*)"', re.MULTILINE)
 _TOML_DISPLAY = re.compile(r'^\s*displayName\s*=\s*"([^"]*)"', re.MULTILINE)
 _TOML_VERSION = re.compile(r'^\s*version\s*=\s*"([^"]*)"', re.MULTILINE)
 _TOML_DESC = re.compile(r'^\s*description\s*=\s*"([^"]*)"', re.MULTILINE)
+_TOML_MANDATORY = re.compile(r'^\s*mandatory\s*=\s*(true|false)', re.MULTILINE)
+
+
+def _forge_depends(data: Mapping[str, Any]) -> Dict[str, str]:
+    """Собирает обязательные зависимости из таблиц ``dependencies`` Forge."""
+    result: Dict[str, str] = {}
+    dependencies = data.get("dependencies")
+    if not isinstance(dependencies, Mapping):
+        return result
+    for entries in dependencies.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            if entry.get("mandatory") is False:
+                continue
+            mod_id = str(entry.get("modId") or "")
+            if mod_id:
+                result[mod_id] = str(entry.get("versionRange") or "")
+    return result
 
 
 def _parse_toml_mods(raw: bytes, loader: str) -> Dict[str, Any]:
@@ -178,9 +221,21 @@ def _parse_toml_mods(raw: bytes, loader: str) -> Dict[str, Any]:
                 "version": str(first.get("version") or ""),
                 "description": str(first.get("description") or ""),
                 "authors": [item.strip() for item in str(raw_authors).split(",") if item.strip()],
+                "depends": _forge_depends(data),
             }
 
-    # Ручной разбор
+    # Ручной разбор (Python 3.9/3.10 или TOML со странностями).
+    depends: Dict[str, str] = {}
+    block = re.compile(r"\[\[dependencies\.([^\]]+)\]\]")
+    matches = list(block.finditer(text))
+    for index, match in enumerate(matches):
+        chunk = text[match.end(): matches[index + 1].start() if index + 1 < len(matches) else len(text)]
+        mandatory = _TOML_MANDATORY.search(chunk)
+        if mandatory and mandatory.group(1) == "false":
+            continue
+        dep = _TOML_MODID.search(chunk)
+        if dep:
+            depends[dep.group(1)] = ""
     return {
         "loader": loader,
         "name": (_TOML_DISPLAY.search(text) or _TOML_MODID.search(text)).group(1) if (_TOML_DISPLAY.search(text) or _TOML_MODID.search(text)) else "",
@@ -188,6 +243,7 @@ def _parse_toml_mods(raw: bytes, loader: str) -> Dict[str, Any]:
         "version": _TOML_VERSION.search(text).group(1) if _TOML_VERSION.search(text) else "",
         "description": _TOML_DESC.search(text).group(1) if _TOML_DESC.search(text) else "",
         "authors": [],
+        "depends": depends,
     }
 
 
@@ -246,6 +302,7 @@ def list_mods(mods_dir: Path | str) -> List[LocalMod]:
                 authors=[str(item) for item in (metadata.get("authors") or [])],
                 loader=str(metadata.get("loader") or ""),
                 error=str(metadata.get("error") or ""),
+                depends=dict(metadata.get("depends") or {}),
             )
         )
     result.sort(key=lambda item: item.title.lower())

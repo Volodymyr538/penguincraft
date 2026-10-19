@@ -1,6 +1,7 @@
 # 🐧 PenguinCraft
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/Volodymyr538/penguincraft/actions/workflows/ci.yml/badge.svg)](https://github.com/Volodymyr538/penguincraft/actions/workflows/ci.yml)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Platform: Linux / ChromeOS](https://img.shields.io/badge/platform-Linux%20%2F%20ChromeOS-informational.svg)](https://github.com/Volodymyr538/penguincraft)
 
@@ -25,8 +26,15 @@
 - **Аккаунты** — Microsoft (вход по коду устройства), офлайн-профили и
   Ely.by.
 - **Моды** — поиск и установка с Modrinth прямо в экземпляр, включение и
-  выключение модов, импорт `.jar` из файлов, поиск дубликатов и
-  **обновление установленных модов** одной кнопкой.
+  выключение модов, импорт `.jar` из файлов, поиск дубликатов,
+  **обновление установленных модов** одной кнопкой и **автоматический
+  подбор обязательных зависимостей**.
+- **Проверка зависимостей** — поиск модов без нужных библиотек,
+  выключенных зависимостей, конфликтов и модов «чужого» загрузчика.
+- **Проверка целостности** — сверка файлов игры с манифестом Mojang и
+  восстановление повреждённых клиента, библиотек и ресурсов.
+- **Автообновление модов** — фоновая проверка обновлений при запуске
+  лаунчера с настраиваемым интервалом (игру не блокирует).
 - **Ресурспаки и шейдеры** — поиск на Modrinth и установка в
   `resourcepacks/` и `shaderpacks/`. Раньше этот поиск почти всегда был
   пуст — исправлено.
@@ -35,7 +43,13 @@
   **обновление сборки** до новой версии «на месте».
 - **Экземпляры** — отдельный «домашний» каталог для каждой сборки: свои
   моды, миры, настройки. Ничего не перепутается. Плюс **экспорт и импорт
-  экземпляра** архивом и **резервная копия миров**.
+  экземпляра** архивом и **управление мирами**: экспорт, импорт,
+  удаление и резервная копия.
+- **Настройки экземпляра** — память, профиль JVM, аргументы, путь к Java,
+  разрешение и заметки в отдельном окне.
+- **Отчёт о падении** можно посмотреть прямо в лаунчере, а **обновления
+  самого лаунчера** проверяются через GitHub Releases.
+- **Масштаб интерфейса** 100–200 % для HiDPI-экранов.
 - **Оптимизация под хромбуки** — профиль JVM «Хромбук», Serial GC, быстрый
   старт, авто-подбор памяти, программный OpenGL для очень слабых машин.
 - **Экономия диска** — библиотеки и ресурсы общие для всех экземпляров,
@@ -61,8 +75,8 @@ sudo apt install -y python3 python3-tk
 добавляет пункт в меню «Linux-приложения»:
 
 ```bash
-sh PenguinCraft-1.1.0-installer.sh              # установить или обновить
-sh PenguinCraft-1.1.0-installer.sh --uninstall  # удалить
+sh PenguinCraft-1.2.0-installer.sh              # установить или обновить
+sh PenguinCraft-1.2.0-installer.sh --uninstall  # удалить
 ```
 
 Запуск — из меню ChromeOS (`Linux-приложения` → PenguinCraft) или командой
@@ -78,7 +92,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ### Вариант 2 — пакет .deb (системная установка)
 
 ```bash
-sudo apt install ./penguincraft_1.1.0_all.deb
+sudo apt install ./penguincraft_1.2.0_all.deb
 penguincraft            # или из меню приложений
 sudo apt remove penguincraft
 ```
@@ -135,7 +149,11 @@ cd penguincraft
 3. Нажмите **Играть**. Если Java нужной версии нет — лаунчер сам её
    скачает с Adoptium.
 4. Моды — во вкладке **Моды** (поиск в Modrinth), сборки — во вкладке
-   **Модпаки**.
+   **Модпаки**. Обязательные зависимости подтягиваются автоматически
+   (галочка «Зависимости»), а кнопка «Проверить зависимости» подскажет,
+   чего не хватает.
+5. Если игра «не запускается непонятно почему» — кнопка **Проверить
+   файлы** на странице экземпляра найдёт и докачает повреждённые файлы.
 
 ---
 
@@ -158,6 +176,10 @@ penguincraft [--root КАТАЛОГ] [-v] КОМАНДА
   account-elyby ЛОГИН
   mod-search ЗАПРОС
   modpack-install ИСТОЧНИК
+  verify ЭКЗЕМПЛЯР [--deep] [--repair]
+  worlds ЭКЗЕМПЛЯР
+  update-mods
+  check-updates
 ```
 
 Примеры:
@@ -171,6 +193,12 @@ penguincraft modpack-install ~/Downloads/SuperPack.mrpack
 
 # Найти мод
 penguincraft mod-search sodium --loader fabric --version 1.20.1
+
+# Проверить файлы игры и починить повреждённые
+penguincraft verify "Моя сборка" --deep --repair
+
+# Обновить моды во всех экземплярах
+penguincraft update-mods
 ```
 
 ---
@@ -227,19 +255,37 @@ penguincraft mod-search sodium --loader fabric --version 1.20.1
 
 ```
 penguincraft/
-├── core/       сеть, версии, библиотеки, ресурсы, Java, запуск
+├── core/       сеть, версии, библиотеки, ресурсы, Java, запуск,
+│               целостность файлов и проверка обновлений
 ├── auth/       аккаунты: Microsoft, офлайн, Ely.by
 ├── loaders/    Fabric, Quilt, Forge, NeoForge, ванилла
-├── mods/       Modrinth, установка .mrpack, работа с mods/
+├── mods/       Modrinth, установка .mrpack, работа с mods/,
+│               зависимости модов
 ├── ui/         tkinter-интерфейс (тема, виджеты, страницы, иконка)
 ├── manager.py  фасад для интерфейса и CLI
 └── cli.py      командная строка
+
+tests/          автотесты (unittest, без сети и графики)
 
 packaging/
 ├── build.sh        сборка .deb и установщика в dist/
 ├── installer.sh.in шаблон самораспаковывающегося установщика
 └── deb/            файлы пакета: control, postinst, postrm, copyright
 ```
+
+---
+
+## Тесты
+
+Автотесты не требуют сети и графики:
+
+```bash
+python3 -m unittest discover -s tests -t .
+```
+
+В репозитории есть workflow GitHub Actions
+(`.github/workflows/ci.yml`), который проверяет синтаксис, отсутствие
+сторонних импортов и прогоняет тесты на Python 3.9–3.13.
 
 ---
 

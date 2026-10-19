@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Тесты (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Настроить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Версия и окружение
+        run: |
+          python --version
+          python -c "import sys; print(sys.executable)"
+
+      - name: Проверить синтаксис (compileall)
+        run: python -m compileall -q penguincraft
+
+      - name: Проверить импорт пакета
+        run: python -c "import penguincraft; print(penguincraft.APP_NAME, penguincraft.APP_VERSION)"
+
+      - name: Автотесты
+        run: python -m unittest discover -s tests -t . -v
+
+  lint:
+    name: Мелкие проверки
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Настроить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Нет сторонних импортов вне стандартной библиотеки
+        run: |
+          python - <<'PY'
+          import ast
+          import pathlib
+          import sys
+
+          stdlib = set(sys.stdlib_module_names)
+          allowed = {"penguincraft"}
+          problems = []
+          for path in pathlib.Path("penguincraft").rglob("*.py"):
+              tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              for node in ast.walk(tree):
+                  roots = []
+                  if isinstance(node, ast.Import):
+                      roots = [alias.name.split(".")[0] for alias in node.names]
+                  elif isinstance(node, ast.ImportFrom):
+                      if node.level:
+                          continue
+                      roots = [(node.module or "").split(".")[0]]
+                  for root in roots:
+                      if root and root not in stdlib and root not in allowed:
+                          problems.append(f"{path}: {root}")
+          for item in problems:
+              print("Внешний импорт:", item)
+          sys.exit(1 if problems else 0)
+          PY

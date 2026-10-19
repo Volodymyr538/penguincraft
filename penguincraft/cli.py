@@ -354,6 +354,78 @@ def cmd_modpack_install(manager: LauncherManager, args: argparse.Namespace) -> i
     return 0
 
 
+def cmd_verify(manager: LauncherManager, args: argparse.Namespace) -> int:
+    instance = manager.instances.get(args.instance)
+    if instance is None:
+        print(f"Экземпляр «{args.instance}» не найден", file=sys.stderr)
+        return 1
+    reporter = Reporter(ConsoleReporter(args.verbose))
+    try:
+        report = manager.verify_instance(
+            instance, deep=args.deep, repair=args.repair, reporter=reporter
+        )
+    except (LauncherError, Cancelled) as error:
+        print(f"Ошибка: {error}", file=sys.stderr)
+        return 1
+    if report.ok:
+        print(f"Проверено файлов: {report.checked}. Проблем не найдено.")
+        return 0
+    print(f"Проверено файлов: {report.checked}. Проблем: {len(report.issues)}")
+    for issue in report.issues[: args.limit]:
+        print(f"  ✗ [{issue.kind}] {issue.path.name} — {issue.reason}")
+    if len(report.issues) > args.limit:
+        print(f"  … и ещё {len(report.issues) - args.limit}")
+    if report.repaired:
+        print(f"Восстановлено: {report.repaired}")
+    for failure in report.failed:
+        print(f"  ! {failure}", file=sys.stderr)
+    return 1
+
+
+def cmd_worlds(manager: LauncherManager, args: argparse.Namespace) -> int:
+    instance = manager.instances.get(args.instance)
+    if instance is None:
+        print(f"Экземпляр «{args.instance}» не найден", file=sys.stderr)
+        return 1
+    worlds = manager.worlds(instance)
+    if not worlds:
+        print("Миров нет.")
+        return 0
+    for world in worlds:
+        mark = "✓" if world.has_level else "?"
+        print(f"  {mark} {world.name:<32} {human_size(world.size):>10}  {world.modified_text}")
+    return 0
+
+
+def cmd_update_mods(manager: LauncherManager, args: argparse.Namespace) -> int:
+    reporter = Reporter(ConsoleReporter(args.verbose))
+    try:
+        counters = manager.auto_update_mods(reporter=reporter, force=True)
+    except Cancelled:
+        print("Отменено.", file=sys.stderr)
+        return 1
+    print(
+        f"Экземпляров проверено: {counters['checked']}, "
+        f"обновлено проектов: {counters['updated']}, ошибок: {counters['failed']}"
+    )
+    return 0
+
+
+def cmd_check_updates(manager: LauncherManager, args: argparse.Namespace) -> int:
+    from .core.update import check_latest
+
+    release = check_latest(manager.http)
+    if release is None:
+        print("Не удалось проверить обновления (нет сети).", file=sys.stderr)
+        return 1
+    if release.is_newer:
+        print(f"Доступна новая версия: {release.version}")
+        print(f"Скачать: {release.url}")
+        return 0
+    print(f"Установлена последняя версия ({APP_VERSION}).")
+    return 0
+
+
 def cmd_doctor(manager: LauncherManager, args: argparse.Namespace) -> int:
     print(f"{APP_NAME} {APP_VERSION} — диагностика")
     print()
@@ -494,8 +566,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--loader", default="")
     p.set_defaults(func=cmd_modpack_install)
 
-    return parser
+    p = sub.add_parser("verify", help="проверить целостность файлов экземпляра")
+    p.add_argument("instance")
+    p.add_argument("--deep", action="store_true", help="сверять sha1 (медленнее)")
+    p.add_argument("--repair", action="store_true", help="докачать повреждённые файлы")
+    p.add_argument("--limit", type=int, default=25, help="сколько проблем показать")
+    p.set_defaults(func=cmd_verify)
 
+    p = sub.add_parser("worlds", help="список миров экземпляра")
+    p.add_argument("instance")
+    p.set_defaults(func=cmd_worlds)
+
+    p = sub.add_parser("update-mods", help="обновить моды во всех экземплярах")
+    p.set_defaults(func=cmd_update_mods)
+
+    p = sub.add_parser("check-updates", help="проверить обновления лаунчера")
+    p.set_defaults(func=cmd_check_updates)
+
+    return parser
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()

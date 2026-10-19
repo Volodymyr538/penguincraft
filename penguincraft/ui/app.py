@@ -65,6 +65,7 @@ class LauncherApp(tk.Tk):
         self._progress_indeterminate = False
         self._icon_cache = None
         self._closing = False
+        self._dpi_scaling: Optional[float] = None
 
         self.title("PenguinCraft — лаунчер Minecraft")
         self.minsize(920, 580)
@@ -72,10 +73,121 @@ class LauncherApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._set_window_icon()
 
+        self._apply_scaling()
         self._build_theme()
         self._build_ui()
         self.select("home")
         self.after(60, self._poll)
+        self.after(1500, self._startup_checks)
+
+    # ------------------------------------------------------------------
+    # Масштаб интерфейса
+    # ------------------------------------------------------------------
+    def _base_scaling(self) -> float:
+        """Собственный масштаб Tk (зависит от DPI экрана)."""
+        if self._dpi_scaling is None:
+            try:
+                self._dpi_scaling = float(self.tk.call("tk", "scaling"))
+            except tk.TclError:  # pragma: no cover
+                self._dpi_scaling = 1.0
+        return self._dpi_scaling
+
+    def _apply_scaling(self) -> None:
+        factor = self._base_scaling() * max(0.5, min(float(self.settings.ui_scale or 1.0), 2.0))
+        try:
+            self.tk.call("tk", "scaling", factor)
+        except tk.TclError:  # pragma: no cover
+            pass
+
+    def apply_ui_scale(self) -> None:
+        """Применяет новый масштаб (после смены настройки) и пересобирает окно."""
+        if self._current_task is not None:
+            show_info(self, "Дождитесь завершения текущей операции, затем смените масштаб.")
+            return
+        self._apply_scaling()
+        key = self._current_key or "home"
+        for child in self.winfo_children():
+            child.destroy()
+        self._views.clear()
+        self._nav_buttons.clear()
+        self._build_theme()
+        self._build_ui()
+        self.select(key)
+
+    # ------------------------------------------------------------------
+    # Стартовые проверки (обновления лаунчера и модов)
+    # ------------------------------------------------------------------
+    def _startup_checks(self) -> None:
+        if self._closing:
+            return
+        if self.settings.check_launcher_updates:
+            self._check_launcher_update_quiet()
+        if self.settings.auto_update_mods:
+            self._maybe_auto_update_mods()
+
+    def _check_launcher_update_quiet(self, *, force: bool = False) -> None:
+        import time as _time
+
+        settings = self.settings
+        now = _time.time()
+        if not force and settings.last_update_check and now - settings.last_update_check < 86400:
+            return
+        if self._current_task is not None:
+            return
+
+        def work(reporter):
+            reporter.status("Проверка обновлений лаунчера…")
+            return self.manager.check_launcher_update()
+
+        def done(release) -> None:
+            settings.last_update_check = now
+            try:
+                self.manager.save_settings()
+            except OSError:
+                pass
+            if release is None or not release.is_newer:
+                return
+            self.log(f"Доступна новая версия PenguinCraft: {release.version}")
+            self.set_status(f"Доступна версия {release.version}", "warning")
+            self._notify_update(release)
+
+        self.run_task("Проверка обновлений", work, on_done=done)
+
+    def _notify_update(self, release) -> None:
+        from .widgets import ask_yes_no
+        import webbrowser
+
+        if ask_yes_no(
+            self,
+            f"Доступна новая версия PenguinCraft: {release.version}\n"
+            f"У вас установлена {APP_VERSION}.\n\n"
+            "Открыть страницу загрузки?",
+            "Обновление лаунчера",
+        ):
+            try:
+                webbrowser.open(release.url)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _maybe_auto_update_mods(self) -> None:
+        if self._current_task is not None or self.manager.game_running:
+            return
+
+        def work(reporter):
+            return self.manager.auto_update_mods(reporter=reporter)
+
+        def done(counters) -> None:
+            if counters.get("updated"):
+                self.log(
+                    f"Автообновление модов: обновлено {counters['updated']} "
+                    f"в {counters['checked']} экземплярах"
+                )
+                self.set_status(
+                    f"Моды обновлены: {counters['updated']}", "success"
+                )
+                self.refresh_all()
+
+        self.run_task("Автообновление модов", work, on_done=done)
 
     # ------------------------------------------------------------------
     # Сборка интерфейса
@@ -285,6 +397,13 @@ class LauncherApp(tk.Tk):
         self.manager.save_settings()
 
         def work(reporter):
+            try:
+                issues = self.manager.check_instance_health(instance)
+            except Exception:  # noqa: BLE001
+                issues = {}
+            for key, items in (issues or {}).items():
+                for item in items:
+                    reporter.log(f"Внимание: {item}")
             return self.manager.launch(
                 instance,
                 account,
@@ -296,8 +415,22 @@ class LauncherApp(tk.Tk):
         def done(process) -> None:
             self.log(f"Игра запущена (PID {process.pid})")
             self.on_game_state_changed()
+            if self.settings.close_on_launch:
+                self.log("Лаунчер закроется сразу после запуска игры")
+                self.after(700, self._close_after_launch)
 
         self.run_task(f"Запуск «{instance.display_name}»", work, on_done=done)
+
+    def _close_after_launch(self) -> None:
+        if self._current_task is not None:
+            return
+        try:
+            self.settings.window_width = self.winfo_width()
+            self.settings.window_height = self.winfo_height()
+            self.manager.save_settings()
+        except Exception:  # noqa: BLE001
+            pass
+        self.destroy()
 
     def stop_game(self) -> None:
         self.manager.stop_game()
@@ -330,11 +463,54 @@ class LauncherApp(tk.Tk):
                 f"Найден отчёт о падении:\n{report.name}",
                 "Игра упала",
             )
-            if ask_yes_no(self, "Открыть папку с отчётами о падениях?", "Игра упала"):
+            if ask_yes_no(self, "Показать отчёт о падении?", "Игра упала"):
+                self.show_crash_report(report)
+            elif ask_yes_no(self, "Открыть папку с отчётами о падениях?", "Игра упала"):
                 open_in_file_manager(report.parent)
         else:
             self.set_status(f"Игра завершилась с кодом {code}", "error")
             self.log("Отчёт о падении не найден — подробности в разделе «Консоль»")
+
+    def show_crash_report(self, path=None) -> None:
+        """Открывает окно с текстом отчёта о падении."""
+        from pathlib import Path
+
+        from .widgets import CrashReportWindow, show_info
+
+        if path is None:
+            process = self.manager.process
+            try:
+                path = process.crash_report() if process is not None else None
+            except Exception:  # noqa: BLE001
+                path = None
+        if path is None:
+            path = self._newest_crash_report()
+        if path is None:
+            show_info(self, "Отчёт о падении не найден.", "Отчёты о падениях")
+            return
+        CrashReportWindow(self, Path(path), self.theme)
+
+    def _newest_crash_report(self):
+        """Самый свежий отчёт о падении среди экземпляров."""
+        newest = None
+        newest_time = 0.0
+        try:
+            instances = self.manager.instances.list()
+        except Exception:  # noqa: BLE001
+            instances = []
+        for instance in instances:
+            directory = self.manager.instances.game_dir(instance.name) / "crash-reports"
+            if not directory.is_dir():
+                continue
+            for entry in directory.glob("*.txt"):
+                try:
+                    modified = entry.stat().st_mtime
+                except OSError:
+                    continue
+                if modified > newest_time:
+                    newest_time = modified
+                    newest = entry
+        return newest
 
     def _finish(self, label: str, payload, kind: str) -> None:
         task = self._current_task

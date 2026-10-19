@@ -281,6 +281,25 @@ class Modrinth:
             return None
         return ModVersion.from_dict(data) if isinstance(data, Mapping) else None
 
+    def version_by_hash(self, sha1: str) -> Optional[ModVersion]:
+        """Находит версию проекта по sha1 файла (для вручную поставленных модов).
+
+        Modrinth отвечает 404, если файла нет в базе — это нормальная
+        ситуация, поэтому возвращаем ``None`` вместо исключения.
+        """
+        digest = (sha1 or "").strip().lower()
+        if len(digest) != 40:
+            return None
+        try:
+            data = self._get(
+                f"/version_file/{urllib.parse.quote(digest)}",
+                params={"algorithm": "sha1"},
+                ttl=6 * 3600,
+            )
+        except ModrinthError:
+            return None
+        return ModVersion.from_dict(data) if isinstance(data, Mapping) else None
+
     # ------------------------------------------------------------------
     def best_version(
         self,

@@ -30,6 +30,7 @@ class SettingsView(BaseView):
         self._build_general(notebook)
         self._build_java(notebook)
         self._build_game(notebook)
+        self._build_mods(notebook)
         self._build_network(notebook)
 
         footer = ttk.Frame(body, style="TFrame")
@@ -76,9 +77,62 @@ class SettingsView(BaseView):
         ttk.Spinbox(frame, from_=1, to=32, textvariable=self.parallel_var, width=6).grid(row=row, column=1, sticky="w", pady=8)
         row += 1
 
+        ttk.Label(frame, text="Масштаб интерфейса", style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=8, padx=(0, 14))
+        self.scale_var = tk.StringVar()
+        self.scale_combo = ttk.Combobox(
+            frame, state="readonly", width=12,
+            values=["100 %", "110 %", "125 %", "150 %", "175 %", "200 %"],
+            textvariable=self.scale_var,
+        )
+        self.scale_combo.grid(row=row, column=1, sticky="w", pady=8)
+        row += 1
+
         ttk.Label(frame, text="Закрывать лаунчер после запуска игры", style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=8, padx=(0, 14))
         self.close_var = tk.BooleanVar()
         ttk.Checkbutton(frame, variable=self.close_var).grid(row=row, column=1, sticky="w", pady=8)
+
+    def _build_mods(self, notebook) -> None:
+        frame = self._section(notebook, "Моды и обновления")
+        row = 0
+
+        self.deps_var = tk.BooleanVar()
+        ttk.Checkbutton(
+            frame, text="Устанавливать обязательные зависимости модов автоматически",
+            variable=self.deps_var,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=6)
+        row += 1
+
+        self.auto_update_var = tk.BooleanVar()
+        ttk.Checkbutton(
+            frame, text="Автоматически обновлять моды при запуске лаунчера",
+            variable=self.auto_update_var,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=6)
+        row += 1
+
+        ttk.Label(frame, text="Проверять обновления не чаще", style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=8, padx=(0, 14))
+        hours_row = ttk.Frame(frame, style="TFrame")
+        hours_row.grid(row=row, column=1, sticky="w", pady=8)
+        self.hours_var = tk.IntVar()
+        ttk.Spinbox(hours_row, from_=1, to=720, textvariable=self.hours_var, width=6).pack(side="left")
+        ttk.Label(hours_row, text="ч", style="Muted.TLabel").pack(side="left", padx=(6, 0))
+        row += 1
+
+        self.check_launcher_var = tk.BooleanVar()
+        ttk.Checkbutton(
+            frame, text="Проверять обновления самого лаунчера", variable=self.check_launcher_var
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=6)
+        row += 1
+
+        buttons = ttk.Frame(frame, style="TFrame")
+        buttons.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(
+            buttons, text="Проверить обновления лаунчера",
+            command=self._check_launcher_update,
+        ).pack(side="left")
+        ttk.Button(
+            buttons, text="Обновить моды сейчас",
+            command=self._update_mods_now,
+        ).pack(side="left", padx=(8, 0))
 
     def _build_java(self, notebook) -> None:
         frame = self._section(notebook, "Java и память")
@@ -227,7 +281,70 @@ class SettingsView(BaseView):
         self.game_args_var.set(settings.game_args)
 
         self.proxy_var.set(settings.proxy)
+        self.scale_var.set(self._scale_label(float(settings.ui_scale or 1.0)))
+        self.deps_var.set(bool(settings.install_dependencies))
+        self.auto_update_var.set(bool(settings.auto_update_mods))
+        self.hours_var.set(int(settings.auto_update_hours or 24))
+        self.check_launcher_var.set(bool(settings.check_launcher_updates))
         self._memory_mode_changed()
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _scale_label(value: float) -> str:
+        percent = int(round(float(value) * 100))
+        return f"{percent} %"
+
+    @staticmethod
+    def _scale_value(label: str) -> float:
+        digits = "".join(ch for ch in str(label) if ch.isdigit())
+        try:
+            percent = int(digits) if digits else 100
+        except ValueError:
+            percent = 100
+        return max(0.75, min(percent / 100.0, 2.0))
+
+    def _check_launcher_update(self) -> None:
+        def work(reporter):
+            reporter.status("Проверка обновлений лаунчера…")
+            return self.manager.check_launcher_update()
+
+        def done(release) -> None:
+            from ... import APP_VERSION
+
+            if release is None:
+                show_info(self.app, "Не удалось проверить обновления (нет сети).")
+                return
+            if release.is_newer:
+                show_info(
+                    self.app,
+                    f"Доступна новая версия PenguinCraft: {release.version}\n"
+                    f"У вас установлена {APP_VERSION}.\n\n"
+                    f"Скачать: {release.url}",
+                    "Обновление лаунчера",
+                )
+            else:
+                show_info(self.app, f"У вас последняя версия ({APP_VERSION}).")
+
+        self.run_task("Проверка обновлений", work, on_done=done)
+
+    def _update_mods_now(self) -> None:
+        def work(reporter):
+            return self.manager.auto_update_mods(reporter=reporter, force=True)
+
+        def done(counters) -> None:
+            if not counters.get("instances"):
+                show_info(self.app, "Экземпляров с модами не найдено.")
+                return
+            show_info(
+                self.app,
+                f"Проверено экземпляров: {counters['instances']}\n"
+                f"Обновлено проектов: {counters['updated']}\n"
+                f"Ошибок: {counters['failed']}",
+                "Обновление модов",
+            )
+            self.app.refresh_all()
+
+        self.run_task("Обновление модов", work, on_done=done)
 
     def _memory_mode_changed(self) -> None:
         manual = self.memory_mode_var.get() == "manual"
@@ -308,12 +425,27 @@ class SettingsView(BaseView):
         proxy_changed = new_proxy != settings.proxy
         settings.proxy = new_proxy
 
+        settings.install_dependencies = bool(self.deps_var.get())
+        settings.auto_update_mods = bool(self.auto_update_var.get())
+        try:
+            settings.auto_update_hours = max(1, min(int(self.hours_var.get()), 720))
+        except (tk.TclError, ValueError):
+            pass
+        settings.check_launcher_updates = bool(self.check_launcher_var.get())
+
+        new_scale = self._scale_value(self.scale_var.get())
+        scale_changed = abs(new_scale - float(settings.ui_scale or 1.0)) > 0.001
+        settings.ui_scale = new_scale
+
         self.manager.save_settings()
         if proxy_changed:
             self.manager.reload_http()
         self.saved_hint.configure(text="Сохранено")
         self.app.update_header_status("")
         self.app.refresh_all()
+        if scale_changed:
+            self.app.apply_ui_scale()
+            return
         if self.theme_var.get() and self.theme_var.get() != self.app.theme.name:
             self.app.set_theme(self.theme_var.get())
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import shutil
 import time
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -45,6 +46,24 @@ EXPORT_EXCLUDE = ("logs", "crash-reports")
 
 class InstanceError(Exception):
     """Ошибка работы с экземплярами."""
+
+
+@dataclass
+class WorldInfo:
+    """Краткие сведения о мире (каталоге в ``saves``)."""
+
+    name: str
+    path: Path
+    size: int = 0
+    modified: float = 0.0
+    has_level: bool = False
+    has_icon: bool = False
+
+    @property
+    def modified_text(self) -> str:
+        if not self.modified:
+            return "—"
+        return time.strftime("%d.%m.%Y %H:%M", time.localtime(self.modified))
 
 
 class InstanceManager:
@@ -226,6 +245,135 @@ class InstanceManager:
         if not directory.is_dir():
             return []
         return sorted(entry.name for entry in directory.iterdir() if entry.is_dir())
+
+    # ------------------------------------------------------------------
+    # Миры: сведения, экспорт, импорт, удаление
+    # ------------------------------------------------------------------
+    def world_infos(self, name: str) -> List[WorldInfo]:
+        """Список миров с размером и датой изменения."""
+        result: List[WorldInfo] = []
+        for world_name in self.worlds(name):
+            path = self.saves_dir(name) / world_name
+            size = 0
+            for item in path.rglob("*"):
+                try:
+                    if item.is_file() and not item.is_symlink():
+                        size += item.stat().st_size
+                except OSError:
+                    continue
+            try:
+                modified = path.stat().st_mtime
+            except OSError:
+                modified = 0.0
+            result.append(
+                WorldInfo(
+                    name=world_name,
+                    path=path,
+                    size=size,
+                    modified=modified,
+                    has_level=(path / "level.dat").is_file(),
+                    has_icon=(path / "icon.png").is_file(),
+                )
+            )
+        result.sort(key=lambda item: item.modified, reverse=True)
+        return result
+
+    def unique_world_name(self, name: str, wanted: str) -> str:
+        """Свободное имя мира внутри экземпляра."""
+        saves = self.saves_dir(name)
+        base = sanitize_name(wanted) or "Мир"
+        candidate = base
+        for number in range(2, 1000):
+            if not (saves / candidate).exists():
+                return candidate
+            candidate = f"{base} ({number})"
+        raise InstanceError("Слишком много миров с похожими именами")
+
+    def export_world(
+        self,
+        name: str,
+        world: str,
+        target: Path | str,
+        *,
+        reporter=None,
+    ) -> Path:
+        """Сохраняет один мир в zip-архив."""
+        source = self.saves_dir(name) / world
+        if not source.is_dir():
+            raise InstanceError(f"Мир «{world}» не найден")
+        target = Path(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".part")
+        count = 0
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(source.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                relative = path.relative_to(source)
+                archive.write(path, relative.as_posix())
+                count += 1
+                if reporter and count % 50 == 0:
+                    reporter.status(f"Экспорт мира: {count} файлов…")
+                    reporter.check_cancel()
+        tmp.replace(target)
+        if reporter:
+            reporter.log(f"Мир «{world}» сохранён: {count} файлов")
+        return target
+
+    def import_world(
+        self,
+        name: str,
+        archive_path: Path | str,
+        *,
+        world_name: str = "",
+        reporter=None,
+    ) -> WorldInfo:
+        """Импортирует мир из zip-архива (папка мира или её содержимое)."""
+        archive_path = Path(archive_path)
+        if not archive_path.is_file():
+            raise InstanceError(f"Архив не найден: {archive_path}")
+        staging = self.paths.cache / "world-import" / f"{int(time.time())}-{sanitize_name(archive_path.stem)}"
+        remove_tree(staging)
+        try:
+            if reporter:
+                reporter.status("Распаковка мира…")
+            extract_zip(archive_path, staging)
+            root = _world_root(staging)
+            if root is None:
+                raise InstanceError(
+                    "В архиве не найден level.dat — это не похоже на мир Minecraft."
+                )
+            saves = self.saves_dir(name)
+            saves.mkdir(parents=True, exist_ok=True)
+            wanted = world_name.strip() or root.name or archive_path.stem
+            final_name = self.unique_world_name(name, wanted)
+            target = saves / final_name
+            if reporter:
+                reporter.status(f"Копирование мира «{final_name}»…")
+            copy_tree(root, target)
+            return WorldInfo(
+                name=final_name,
+                path=target,
+                size=sum(
+                    item.stat().st_size
+                    for item in target.rglob("*")
+                    if item.is_file()
+                ),
+                modified=time.time(),
+                has_level=(target / "level.dat").is_file(),
+                has_icon=(target / "icon.png").is_file(),
+            )
+        finally:
+            remove_tree(staging)
+
+    def delete_world(self, name: str, world: str) -> None:
+        path = self.saves_dir(name) / world
+        if not path.is_dir():
+            raise InstanceError(f"Мир «{world}» не найден")
+        remove_tree(path)
+
+    def world_backup_name(self, name: str, world: str) -> str:
+        return f"{name}-{sanitize_name(world)}.zip"
 
     def ensure_layout(self, name: str) -> Path:
         game_dir = self.paths.instance_game_dir(name)
@@ -420,9 +568,33 @@ class InstanceManager:
 
 
 # ---------------------------------------------------------------------------
-# Пресеты графики для слабых машин
+# Вспомогательное: корень мира внутри распакованного архива
 # ---------------------------------------------------------------------------
 
+
+def _world_root(staging: Path) -> Optional[Path]:
+    """Ищет каталог с ``level.dat`` в распакованном архиве.
+
+    Поддерживает два варианта: архив содержит папку мира целиком или
+    только её содержимое.  Слишком глубокая вложенность не разыскивается
+    специально — это защита от неожиданных архивов.
+    """
+    if (staging / "level.dat").is_file():
+        return staging
+    entries = [entry for entry in staging.iterdir() if entry.is_dir()] if staging.is_dir() else []
+    # Пропускаем служебные каталоги архиваторов.
+    entries = [entry for entry in entries if not entry.name.startswith("__MACOSX")]
+    if len(entries) == 1 and (entries[0] / "level.dat").is_file():
+        return entries[0]
+    for entry in entries:
+        if (entry / "level.dat").is_file():
+            return entry
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Пресеты графики для слабых машин
+# ---------------------------------------------------------------------------
 GRAPHICS_PRESETS: Dict[str, Dict[str, str]] = {
     "chromebook": {
         "graphicsMode": "0",

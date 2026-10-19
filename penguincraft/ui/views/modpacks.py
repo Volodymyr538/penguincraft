@@ -21,6 +21,7 @@ class ModpacksView(BaseView):
     def build(self) -> None:
         page = self.page()
         self._hits: Dict[str, object] = {}
+        self._offset = 0
 
         bar = ttk.Frame(page, style="TFrame")
         bar.pack(fill="x", pady=(0, 10))
@@ -30,6 +31,13 @@ class ModpacksView(BaseView):
         entry.bind("<Return>", lambda _e: self._search())
         ttk.Button(bar, text="Найти", style="Accent.TButton", command=self._search).pack(side="left", padx=(8, 0))
         ttk.Button(bar, text="Установить из файла…", command=self._install_file).pack(side="left", padx=(8, 0))
+        self.sort_combo = ttk.Combobox(
+            bar, state="readonly", width=16,
+            values=["По релевантности", "По загрузкам", "По новизне", "По подпискам"],
+        )
+        self.sort_combo.current(0)
+        self.sort_combo.pack(side="left", padx=(8, 0))
+        self.sort_combo.bind("<<ComboboxSelected>>", lambda _e: self._search())
 
         self.table = Table(
             page,
@@ -50,6 +58,9 @@ class ModpacksView(BaseView):
         actions.pack(fill="x", pady=(10, 0))
         ttk.Button(actions, text="Установить выбранный", style="Accent.TButton", command=self._install_selected).pack(side="left")
         ttk.Button(actions, text="Открыть страницу", command=self._open_page).pack(side="left", padx=(8, 0))
+        self.more_button = ttk.Button(actions, text="Показать ещё", command=self._search_more)
+        self.more_button.pack(side="left", padx=(8, 0))
+        self.more_button.state(["disabled"])
         self.status = ttk.Label(actions, text="", style="Muted.TLabel")
         self.status.pack(side="right")
 
@@ -64,31 +75,51 @@ class ModpacksView(BaseView):
     def reload(self) -> None:
         pass
 
-    def _search(self) -> None:
+    def _search(self, *, offset: int = 0, append: bool = False) -> None:
         query = self.query_var.get().strip()
+        index = {
+            "По релевантности": "relevance",
+            "По загрузкам": "downloads",
+            "По новизне": "newest",
+            "По подпискам": "follows",
+        }.get(self.sort_combo.get(), "relevance")
         self.status.configure(text="Поиск…")
+        self.more_button.state(["disabled"])
 
         def work(reporter):
-            result = self.manager.modrinth.search(query, project_type="modpack", limit=40)
+            result = self.manager.modrinth.search(
+                query, project_type="modpack", index=index, limit=40, offset=offset
+            )
             self.resolve_icons(result.hits)
             return result
 
         def done(result) -> None:
-            self._hits.clear()
-            self.table.clear()
+            if not append:
+                self._hits.clear()
+                self.table.clear()
             for hit in result.hits:
                 iid = hit.project_id or hit.slug
+                if not iid:
+                    continue
                 self._hits[iid] = hit
                 self.table.add(
                     iid,
                     (hit.title, format_downloads(hit.downloads), hit.latest_version, hit.description),
                 )
-            self.status.configure(text=f"Найдено: {result.total}")
+            self._offset = result.offset + len(result.hits)
+            self.status.configure(text=f"Показано: {self.table.count()} из {result.total}")
+            if self.table.count() < result.total and result.hits:
+                self.more_button.state(["!disabled"])
             for iid, hit in list(self._hits.items()):
                 if hit.icon_url:
                     self.app.load_icon(hit.icon_url, lambda photo, item=iid: self._apply_icon(item, photo))
 
         self.run_task("Поиск модпаков", work, on_done=done)
+
+    def _search_more(self) -> None:
+        if self._offset <= 0:
+            return
+        self._search(offset=self._offset, append=True)
 
     def _apply_icon(self, iid: str, photo) -> None:
         if self.table.tree.exists(iid):

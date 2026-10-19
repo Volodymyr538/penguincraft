@@ -222,6 +222,17 @@ class Settings:
     confirm_delete: bool = True
     parallel_downloads: int = 8
     proxy: str = ""
+    ui_scale: float = 1.0                   # 1.0 = 100 %
+
+    # -- моды
+    install_dependencies: bool = True        # ставить обязательные зависимости
+    auto_update_mods: bool = False           # обновлять моды при старте
+    auto_update_hours: int = 24
+    last_mod_update_check: float = 0.0
+
+    # -- обновления лаунчера
+    check_launcher_updates: bool = True
+    last_update_check: float = 0.0
 
     # -- данные
     last_instance: str = "default"
@@ -272,6 +283,14 @@ class Settings:
         self.window_height = max(560, min(int(self.window_height or 760), 2400))
         self.resolution_width = max(320, min(int(self.resolution_width or 854), 7680))
         self.resolution_height = max(240, min(int(self.resolution_height or 480), 4320))
+        try:
+            self.ui_scale = max(0.75, min(float(self.ui_scale or 1.0), 2.0))
+        except (TypeError, ValueError):
+            self.ui_scale = 1.0
+        try:
+            self.auto_update_hours = max(1, min(int(self.auto_update_hours or 24), 720))
+        except (TypeError, ValueError):
+            self.auto_update_hours = 24
         if self.memory_mode == "manual":
             self.memory_mb = max(512, min(int(self.memory_mb or 2048), 65536))
 
@@ -334,6 +353,10 @@ class InstanceConfig:
             raw = {}
         known = {f.name for f in fields(cls)}
         filtered = {k: v for k, v in raw.items() if k in known}
+        # Имя экземпляра не хранится отдельно: если его нет в файле,
+        # берём имя каталога, а не значение по умолчанию.
+        if "name" not in filtered:
+            filtered["name"] = path.parent.name
         config = cls(**filtered)  # type: ignore[arg-type]
         if not config.name:
             config.name = path.parent.name

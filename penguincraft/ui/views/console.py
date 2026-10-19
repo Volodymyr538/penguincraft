@@ -27,6 +27,7 @@ class ConsoleView(BaseView):
         self.stop_button = ttk.Button(top, text="Остановить", style="Danger.TButton", command=self.app.stop_game)
         self.stop_button.pack(side="left", padx=(8, 0))
         ttk.Button(top, text="Показать команду", style="Ghost.TButton", command=self._show_command).pack(side="left", padx=(8, 0))
+        ttk.Button(top, text="Отчёты о падениях", style="Ghost.TButton", command=self.app.show_crash_report).pack(side="left", padx=(8, 0))
         ttk.Button(top, text="Очистить", style="Ghost.TButton", command=self._clear).pack(side="right")
 
         self.logview = LogView(page, self.theme)

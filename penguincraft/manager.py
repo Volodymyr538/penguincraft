@@ -14,8 +14,9 @@ from .auth.account import Account
 from .auth.microsoft import MicrosoftAuth, MicrosoftAuthError
 from .auth.store import AccountStore
 from .auth.yggdrasil import YggdrasilAuth, YggdrasilError, AuthServer, ELYBY
-from .core.instances import GRAPHICS_PRESETS, InstanceManager
+from .core.instances import GRAPHICS_PRESETS, InstanceManager, WorldInfo
 from .core.installer import InstallError, InstallPlan, install_version
+from .core.integrity import IntegrityReport, repair_version
 from .core.java import JavaRuntime, find_installed_java
 from .core.launch import GameProcess, LaunchCommand, LaunchError, build_command, spawn
 from .core.mojang import VersionManifest, VersionRepository
@@ -24,7 +25,9 @@ from .core.paths import Paths
 from .core.session import SessionError, ensure_valid_account
 from .core.settings import InstanceConfig, Settings, auto_memory_mb
 from .core.task import Cancelled, Reporter
+from .core.update import ReleaseInfo, check_latest
 from .loaders import Loader, LoaderError, get_loader, loader_for_version, local_versions
+from .mods import dependencies as mod_dependencies
 from .mods.modrinth import Modrinth, ModVersion
 from .mods.mrpack import (
     ModpackError,
@@ -363,6 +366,20 @@ class LauncherManager:
         if reporter:
             reporter.status(f"Загрузка {file.filename}…")
         path = self.modrinth.download_file(file, target_dir, reporter=reporter)
+        requires = [
+            str(item.get("project_id") or "")
+            for item in version.dependencies or []
+            if isinstance(item, dict)
+            and str(item.get("dependency_type") or "required") == "required"
+            and item.get("project_id")
+        ]
+        incompatible = [
+            str(item.get("project_id") or "")
+            for item in version.dependencies or []
+            if isinstance(item, dict)
+            and str(item.get("dependency_type") or "") == "incompatible"
+            and item.get("project_id")
+        ]
         try:
             index = self._index(instance)
             index.record(
@@ -372,11 +389,98 @@ class LauncherManager:
                 version_number=version.version_number,
                 title=version.name or path.name,
                 project_type=kind,
+                requires=requires,
+                incompatible=incompatible,
             )
             index.save()
         except OSError:
             pass
         return path
+
+    def install_project_with_dependencies(
+        self,
+        instance: InstanceConfig,
+        project_id: str,
+        *,
+        project_type: str = "mod",
+        version_id: str = "",
+        with_dependencies: Optional[bool] = None,
+        reporter: Optional[Reporter] = None,
+    ) -> Tuple[Path, List[Path]]:
+        """Ставит проект и (по настройке) его обязательные зависимости.
+
+        Возвращает ``(основной файл, файлы зависимостей)``.
+        """
+        kind = (project_type or "mod").lower()
+        loader = instance.loader if kind == "mod" else ""
+        game_version = instance.game_version or instance.version_id
+        if version_id:
+            version = self.modrinth.version(version_id)
+        else:
+            version = self.modrinth.best_version(
+                project_id, loader=loader, game_version=game_version
+            )
+        if version is None:
+            raise LauncherError("Не найдена подходящая версия проекта")
+
+        want_deps = (
+            self.settings.install_dependencies
+            if with_dependencies is None
+            else with_dependencies
+        )
+        installed_ids = [record.project_id for record in self.installed_index(instance).items()]
+        dep_paths: List[Path] = []
+        if want_deps and kind == "mod":
+            plan = mod_dependencies.resolve_for_version(
+                self.modrinth,
+                version,
+                loader=loader,
+                game_version=game_version,
+                installed=installed_ids,
+            )
+            total = len(plan.required)
+            for number, dependency in enumerate(plan.required, start=1):
+                if reporter:
+                    reporter.status(
+                        f"Зависимость {number}/{total}: "
+                        f"{dependency.version.name or dependency.project_id}…"
+                    )
+                    reporter.check_cancel()
+                try:
+                    path = self.install_project_from_modrinth(
+                        instance,
+                        dependency.project_id,
+                        project_type="mod",
+                        version_id=dependency.version.id,
+                        reporter=reporter,
+                    )
+                except LauncherError as error:
+                    if reporter:
+                        reporter.log(
+                            f"Не удалось поставить зависимость "
+                            f"{dependency.version.name or dependency.project_id}: {error}"
+                        )
+                    continue
+                dep_paths.append(path)
+                if reporter:
+                    reporter.log(f"Зависимость установлена: {path.name}")
+            if reporter and plan.unresolved:
+                reporter.log(
+                    "Не найдены версии зависимостей: " + ", ".join(plan.unresolved)
+                )
+            if reporter and plan.conflicts:
+                reporter.log(
+                    "Конфликты с установленными модами: " + ", ".join(plan.conflicts)
+                )
+
+        main = self.install_project_from_modrinth(
+            instance,
+            project_id,
+            project_type=kind,
+            version_id=version.id,
+            reporter=reporter,
+        )
+        return main, dep_paths
 
     # ------------------------------------------------------------------
     # Индекс установленного и обновления
@@ -482,11 +586,289 @@ class LauncherManager:
                 version_number=version.version_number,
                 title=version.name or base_name,
                 project_type=record.project_type,
+                requires=[
+                    str(item.get("project_id") or "")
+                    for item in version.dependencies or []
+                    if isinstance(item, dict)
+                    and str(item.get("dependency_type") or "required") == "required"
+                    and item.get("project_id")
+                ],
+                incompatible=[
+                    str(item.get("project_id") or "")
+                    for item in version.dependencies or []
+                    if isinstance(item, dict)
+                    and str(item.get("dependency_type") or "") == "incompatible"
+                    and item.get("project_id")
+                ],
             )
             index.save()
         except OSError:
             pass
         return path
+
+    # ------------------------------------------------------------------
+    # Ручные моды: сопоставление с Modrinth и автообновление
+    # ------------------------------------------------------------------
+    def match_manual_mods(
+        self,
+        instance: InstanceConfig,
+        *,
+        reporter: Optional[Reporter] = None,
+        include_resourcepacks: bool = False,
+    ) -> Dict[str, str]:
+        """Сопоставляет локальные файлы с Modrinth по sha1.
+
+        Заодно пополняет ``installed.json``: после этого для вручную
+        поставленных модов работают проверка и установка обновлений.
+        Возвращает ``имя файла → project_id`` для найденных.
+        """
+        from .core.util import hash_file
+
+        index = self.installed_index(instance)
+        known = {record.filename for record in index.items()}
+        kinds = ["mod", "resourcepack", "shader"] if include_resourcepacks else ["mod"]
+        found: Dict[str, str] = {}
+        candidates: List[Tuple[str, Path, str]] = []
+        for kind in kinds:
+            directory = self.instances.project_dir(instance.name, kind)
+            for entry in sorted(directory.iterdir()):
+                if not entry.is_file():
+                    continue
+                base = (
+                    entry.name[: -len(mod_manager.DISABLED_SUFFIX)]
+                    if entry.name.endswith(mod_manager.DISABLED_SUFFIX)
+                    else entry.name
+                )
+                if base in known or base in found:
+                    continue
+                if Path(base).suffix.lower() not in (".jar", ".zip", ".litemod"):
+                    continue
+                candidates.append((kind, entry, base))
+
+        total = len(candidates)
+        for number, (kind, entry, base) in enumerate(candidates, start=1):
+            if reporter:
+                reporter.status(f"Сопоставление с Modrinth: {number}/{total}…")
+                reporter.check_cancel()
+            try:
+                digest = hash_file(entry, "sha1")
+            except OSError:
+                continue
+            version = self.modrinth.version_by_hash(digest)
+            if version is None:
+                continue
+            project_id = version.project_id
+            if not project_id:
+                continue
+            found[base] = project_id
+            index.record(
+                base,
+                project_id=project_id,
+                version_id=version.id,
+                version_number=version.version_number,
+                title=version.name or base,
+                project_type=kind,
+                requires=[
+                    str(item.get("project_id") or "")
+                    for item in version.dependencies or []
+                    if isinstance(item, dict)
+                    and str(item.get("dependency_type") or "required") == "required"
+                    and item.get("project_id")
+                ],
+                incompatible=[
+                    str(item.get("project_id") or "")
+                    for item in version.dependencies or []
+                    if isinstance(item, dict)
+                    and str(item.get("dependency_type") or "") == "incompatible"
+                    and item.get("project_id")
+                ],
+            )
+            if reporter:
+                reporter.log(f"Найден в Modrinth: {base} → {version.name or project_id}")
+        try:
+            index.save()
+        except OSError:
+            pass
+        return found
+
+    def auto_update_mods(
+        self,
+        *,
+        reporter: Optional[Reporter] = None,
+        force: bool = False,
+        match_manual: bool = True,
+    ) -> Dict[str, int]:
+        """Обновляет проекты во всех экземплярах (если включено в настройках).
+
+        Возвращает счётчики: ``instances``, ``updated``, ``failed``,
+        ``checked``.  При ``force=False`` уважает интервал
+        ``auto_update_hours`` и отметку ``last_mod_update_check``.
+        """
+        import time as _time
+
+        settings = self.settings
+        now = _time.time()
+        interval = max(1, int(settings.auto_update_hours or 24)) * 3600
+        if not force and settings.last_mod_update_check:
+            if now - settings.last_mod_update_check < interval:
+                return {"instances": 0, "updated": 0, "failed": 0, "checked": 0}
+
+        counters = {"instances": 0, "updated": 0, "failed": 0, "checked": 0}
+        instances = self.instances.list()
+        for instance in instances:
+            if reporter:
+                reporter.check_cancel()
+                reporter.status(f"Проверка обновлений: {instance.display_name}")
+            counters["instances"] += 1
+            try:
+                if match_manual:
+                    self.match_manual_mods(instance, reporter=reporter)
+                found = self.check_project_updates(instance)
+            except Exception as error:  # noqa: BLE001 - один экземпляр не должен ломать остальные
+                counters["failed"] += 1
+                if reporter:
+                    reporter.log(
+                        f"Не удалось проверить «{instance.display_name}»: {error}"
+                    )
+                continue
+            counters["checked"] += 1
+            for record, version in found:
+                if reporter:
+                    reporter.check_cancel()
+                try:
+                    path = self.update_project(
+                        instance, record, version=version, reporter=reporter
+                    )
+                except Exception as error:  # noqa: BLE001
+                    counters["failed"] += 1
+                    if reporter:
+                        reporter.log(
+                            f"Не удалось обновить «{record.title or record.filename}»: {error}"
+                        )
+                    continue
+                counters["updated"] += 1
+                if reporter:
+                    reporter.log(
+                        f"Обновлён «{record.title or record.filename}» → {path.name}"
+                    )
+        settings.last_mod_update_check = now
+        try:
+            self.save_settings()
+        except OSError:
+            pass
+        return counters
+
+    def check_instance_health(
+        self, instance: InstanceConfig
+    ) -> Dict[str, List[str]]:
+        """Проверяет зависимости и совместимость локальных модов.
+
+        Возвращает словарь с ключами ``missing`` (нет зависимостей),
+        ``disabled`` (зависимость выключена), ``conflicts`` (конфликт по
+        индексу) и ``loaders`` (мод другого загрузчика).
+        """
+        mods = mod_manager.list_mods(self.instances.mods_dir(instance.name))
+        result: Dict[str, List[str]] = {
+            "missing": [],
+            "disabled": [],
+            "conflicts": [],
+            "loaders": [],
+        }
+        for title, deps in mod_dependencies.missing_local(mods).items():
+            result["missing"].append(f"{title}: {', '.join(deps)}")
+        for title, deps in mod_dependencies.disabled_requirements(mods).items():
+            result["disabled"].append(f"{title}: {', '.join(deps)}")
+
+        index = self.installed_index(instance)
+        installed = {record.project_id for record in index.items() if record.project_id}
+        for record in index.items():
+            for conflict in record.incompatible:
+                if conflict in installed and conflict != record.project_id:
+                    result["conflicts"].append(
+                        f"{record.title or record.filename} ↔ {conflict}"
+                    )
+        loader = instance.loader
+        if loader and loader != "vanilla":
+            aliases = {"quilt": {"quilt", "fabric"}, "neoforge": {"neoforge", "forge"}}
+            allowed = aliases.get(loader, {loader})
+            for mod in mods:
+                if mod.loader and mod.loader not in allowed:
+                    result["loaders"].append(
+                        f"{mod.title or mod.filename}: {mod.loader} (нужен {loader})"
+                    )
+        return {key: value for key, value in result.items() if value}
+
+    # ------------------------------------------------------------------
+    # Целостность файлов
+    # ------------------------------------------------------------------
+    def verify_instance(
+        self,
+        instance: InstanceConfig,
+        *,
+        deep: bool = False,
+        repair: bool = False,
+        reporter: Optional[Reporter] = None,
+    ) -> IntegrityReport:
+        """Проверяет файлы версии экземпляра и при необходимости чинит их."""
+        version_id = instance.version_id
+        if not version_id:
+            raise LauncherError("У экземпляра не выбрана версия — проверять нечего")
+        if repair:
+            return repair_version(
+                self.paths,
+                self.settings,
+                version_id,
+                self.http,
+                reporter=reporter,
+                game_dir=self.instances.game_dir(instance.name),
+                repository=self.repository,
+                deep=deep,
+                java_path=instance.java_path,
+            )
+        version = self.repository.resolve(version_id, reporter=reporter)
+        from .core.integrity import check_version
+
+        return check_version(
+            self.paths, version, version_id, deep=deep, reporter=reporter
+        )
+
+    # ------------------------------------------------------------------
+    # Обновления лаунчера
+    # ------------------------------------------------------------------
+    def check_launcher_update(self) -> Optional[ReleaseInfo]:
+        """Проверяет GitHub Releases (``None`` при ошибке сети)."""
+        return check_latest(self.http)
+
+    # ------------------------------------------------------------------
+    # Миры
+    # ------------------------------------------------------------------
+    def worlds(self, instance: InstanceConfig) -> List[WorldInfo]:
+        return self.instances.world_infos(instance.name)
+
+    def export_world(
+        self,
+        instance: InstanceConfig,
+        world: str,
+        target: Path | str,
+        *,
+        reporter: Optional[Reporter] = None,
+    ) -> Path:
+        return self.instances.export_world(instance.name, world, target, reporter=reporter)
+
+    def import_world(
+        self,
+        instance: InstanceConfig,
+        archive: Path | str,
+        *,
+        world_name: str = "",
+        reporter: Optional[Reporter] = None,
+    ) -> WorldInfo:
+        return self.instances.import_world(
+            instance.name, archive, world_name=world_name, reporter=reporter
+        )
+
+    def delete_world(self, instance: InstanceConfig, world: str) -> None:
+        self.instances.delete_world(instance.name, world)
 
     # ------------------------------------------------------------------
     # Модпаки

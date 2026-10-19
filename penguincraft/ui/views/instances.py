@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from ...core.util import human_size
 from ..widgets import Card, Table, ask_string, ask_yes_no, show_error, show_info
@@ -174,6 +174,358 @@ class CreateInstanceDialog(tk.Toplevel):
         self.destroy()
 
 
+class InstanceSettingsDialog(tk.Toplevel):
+    """Диалог настроек одного экземпляра (память, JVM, разрешение)."""
+
+    def __init__(self, app, manager, instance):
+        super().__init__(app)
+        self.app = app
+        self.manager = manager
+        self.instance = instance
+        self.result = False
+        self.title(f"Настройки «{instance.display_name}»")
+        self.transient(app)
+        self.resizable(False, False)
+        self.configure(bg=app.theme.colors["panel"])
+        try:
+            self.grab_set()
+        except tk.TclError:  # pragma: no cover
+            pass
+
+        from ...core.settings import JVM_PRESETS, JVM_PRESET_ORDER
+
+        body = ttk.Frame(self, style="Card.TFrame", padding=18)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        row = 0
+
+        def label(text: str) -> None:
+            ttk.Label(body, text=text, style="CardMuted.TLabel").grid(
+                row=row, column=0, sticky="w", pady=6, padx=(0, 12)
+            )
+
+        label("Название")
+        self.name_entry = ttk.Entry(body, width=36)
+        self.name_entry.insert(0, instance.display_name)
+        self.name_entry.grid(row=row, column=1, sticky="ew", pady=6)
+        row += 1
+
+        label("Значок")
+        self.icon_entry = ttk.Entry(body, width=8)
+        self.icon_entry.insert(0, instance.icon or "🎮")
+        self.icon_entry.grid(row=row, column=1, sticky="w", pady=6)
+        row += 1
+
+        label("Память")
+        self.memory_mode_var = tk.StringVar(value=instance.memory_mode or "inherit")
+        mode_row = ttk.Frame(body, style="Card.TFrame")
+        mode_row.grid(row=row, column=1, sticky="w", pady=6)
+        for value, text in (
+            ("inherit", "Как в лаунчере"),
+            ("auto", "Автоматически"),
+            ("manual", "Вручную"),
+        ):
+            ttk.Radiobutton(
+                mode_row, text=text, value=value, variable=self.memory_mode_var,
+                style="Card.TRadiobutton", command=self._memory_changed,
+            ).pack(side="left", padx=(0, 10))
+        row += 1
+
+        label("Объём (МиБ)")
+        self.memory_var = tk.IntVar(value=int(instance.memory_mb or 2048))
+        self.memory_spin = ttk.Spinbox(
+            body, from_=512, to=65536, increment=256, textvariable=self.memory_var, width=8
+        )
+        self.memory_spin.grid(row=row, column=1, sticky="w", pady=6)
+        row += 1
+
+        label("Профиль JVM")
+        self.preset_var = tk.StringVar()
+        self._preset_keys = ["inherit"] + list(JVM_PRESET_ORDER)
+        preset_titles = ["Как в лаунчере"] + [JVM_PRESETS[key]["title"] for key in JVM_PRESET_ORDER]
+        self._preset_titles = preset_titles
+        self.preset_combo = ttk.Combobox(
+            body, state="readonly", values=preset_titles, textvariable=self.preset_var, width=34
+        )
+        self.preset_combo.grid(row=row, column=1, sticky="ew", pady=6)
+        row += 1
+
+        label("Аргументы JVM")
+        self.jvm_args_var = tk.StringVar(value=instance.custom_jvm_args)
+        ttk.Entry(body, textvariable=self.jvm_args_var, width=36).grid(
+            row=row, column=1, sticky="ew", pady=6
+        )
+        row += 1
+
+        label("Путь к Java")
+        java_row = ttk.Frame(body, style="Card.TFrame")
+        java_row.grid(row=row, column=1, sticky="ew", pady=6)
+        java_row.columnconfigure(0, weight=1)
+        self.java_var = tk.StringVar(value=instance.java_path)
+        ttk.Entry(java_row, textvariable=self.java_var).grid(row=0, column=0, sticky="ew")
+        ttk.Button(java_row, text="Обзор…", command=self._browse_java).grid(row=0, column=1, padx=(8, 0))
+        row += 1
+
+        label("Разрешение (0 = как в лаунчере)")
+        res_row = ttk.Frame(body, style="Card.TFrame")
+        res_row.grid(row=row, column=1, sticky="w", pady=6)
+        self.width_var = tk.IntVar(value=int(instance.resolution_width or 0))
+        self.height_var = tk.IntVar(value=int(instance.resolution_height or 0))
+        ttk.Spinbox(res_row, from_=0, to=7680, increment=10, textvariable=self.width_var, width=7).pack(side="left")
+        ttk.Label(res_row, text="×", style="CardMuted.TLabel").pack(side="left", padx=6)
+        ttk.Spinbox(res_row, from_=0, to=4320, increment=10, textvariable=self.height_var, width=7).pack(side="left")
+        row += 1
+
+        self.fullscreen_var = tk.BooleanVar(value=bool(instance.fullscreen))
+        ttk.Checkbutton(
+            body, text="Полноэкранный режим", variable=self.fullscreen_var,
+            style="Card.TCheckbutton",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=5)
+        row += 1
+
+        label("Аргументы игры")
+        self.game_args_var = tk.StringVar(value=instance.game_args)
+        ttk.Entry(body, textvariable=self.game_args_var, width=36).grid(
+            row=row, column=1, sticky="ew", pady=6
+        )
+        row += 1
+
+        label("Заметки")
+        self.notes_text = tk.Text(
+            body, height=3, width=36, wrap="word",
+            background=app.theme.colors["input"], foreground=app.theme.colors["text"],
+            insertbackground=app.theme.colors["text"], relief="flat",
+            highlightthickness=1, highlightbackground=app.theme.colors["border"],
+        )
+        self.notes_text.insert("1.0", instance.notes or "")
+        self.notes_text.grid(row=row, column=1, sticky="ew", pady=6)
+        row += 1
+
+        # Текущее значение профиля
+        if instance.jvm_preset in self._preset_keys:
+            self.preset_var.set(preset_titles[self._preset_keys.index(instance.jvm_preset)])
+        else:
+            self.preset_var.set(preset_titles[0])
+
+        buttons = ttk.Frame(body, style="Card.TFrame")
+        buttons.grid(row=row, column=0, columnspan=2, sticky="e", pady=(14, 0))
+        ttk.Button(buttons, text="Отмена", command=self.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(buttons, text="Сохранить", style="Accent.TButton", command=self._save).pack(side="right")
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self._memory_changed()
+
+    def _memory_changed(self) -> None:
+        self.memory_spin.configure(
+            state=("normal" if self.memory_mode_var.get() == "manual" else "disabled")
+        )
+
+    def _browse_java(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Выберите исполняемый файл java",
+            filetypes=[("Java", "java"), ("Все файлы", "*.*")],
+        )
+        if path:
+            self.java_var.set(path)
+
+    def _save(self) -> None:
+        instance = self.instance
+        instance.display_name = self.name_entry.get().strip() or instance.display_name
+        instance.icon = self.icon_entry.get().strip() or "🎮"
+        instance.memory_mode = self.memory_mode_var.get() or "inherit"
+        try:
+            instance.memory_mb = max(512, int(self.memory_var.get()))
+        except (tk.TclError, ValueError):
+            pass
+        title = self.preset_var.get()
+        instance.jvm_preset = (
+            self._preset_keys[self._preset_titles.index(title)]
+            if title in self._preset_titles
+            else "inherit"
+        )
+        instance.custom_jvm_args = self.jvm_args_var.get().strip()
+        instance.java_path = self.java_var.get().strip()
+        try:
+            instance.resolution_width = max(0, int(self.width_var.get()))
+            instance.resolution_height = max(0, int(self.height_var.get()))
+        except (tk.TclError, ValueError):
+            pass
+        instance.fullscreen = bool(self.fullscreen_var.get())
+        instance.game_args = self.game_args_var.get().strip()
+        instance.notes = self.notes_text.get("1.0", "end-1c").strip()
+        try:
+            self.manager.instances.save(instance)
+        except OSError as error:
+            show_error(self, error)
+            return
+        self.result = True
+        self.destroy()
+
+
+class WorldsDialog(tk.Toplevel):
+    """Управление мирами экземпляра: экспорт, импорт, удаление."""
+
+    def __init__(self, app, manager, instance):
+        super().__init__(app)
+        self.app = app
+        self.manager = manager
+        self.instance = instance
+        self._worlds: Dict[str, object] = {}
+        self.title(f"Миры «{instance.display_name}»")
+        self.transient(app)
+        self.configure(bg=app.theme.colors["panel"])
+        try:
+            self.grab_set()
+        except tk.TclError:  # pragma: no cover
+            pass
+
+        body = ttk.Frame(self, style="Card.TFrame", padding=14)
+        body.pack(fill="both", expand=True)
+        self.table = Table(
+            body,
+            app.theme,
+            [
+                ("name", "Мир", 240),
+                ("size", "Размер", 100, "e"),
+                ("modified", "Изменён", 150),
+                ("level", "level.dat", 90, "center"),
+            ],
+            height=12,
+            on_activate=lambda _i: self._open_folder(),
+        )
+        self.table.pack(fill="both", expand=True)
+
+        actions = ttk.Frame(body, style="Card.TFrame")
+        actions.pack(fill="x", pady=(10, 0))
+        ttk.Button(actions, text="Экспорт…", command=self._export).pack(side="left")
+        ttk.Button(actions, text="Импорт…", style="Accent.TButton", command=self._import).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Открыть папку", command=self._open_folder).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Удалить", style="Danger.TButton", command=self._delete).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Бэкап всех", style="Ghost.TButton", command=self._backup_all).pack(side="right")
+
+        self.status = ttk.Label(body, text="", style="CardMuted.TLabel")
+        self.status.pack(anchor="w", pady=(8, 0))
+
+        self.geometry("720x460")
+        self.minsize(560, 360)
+        self._reload()
+
+    # ------------------------------------------------------------------
+    def _reload(self) -> None:
+        self._worlds.clear()
+        self.table.clear()
+        infos = self.manager.worlds(self.instance)
+        total = 0
+        for info in infos:
+            total += info.size
+            self._worlds[info.name] = info
+            self.table.add(
+                info.name,
+                (
+                    info.name,
+                    human_size(info.size),
+                    info.modified_text,
+                    "есть" if info.has_level else "нет",
+                ),
+            )
+        self.status.configure(
+            text=f"Миров: {len(infos)} · {human_size(total)}"
+            if infos
+            else "В этом экземпляре пока нет миров."
+        )
+
+    def _selected(self):
+        return self._worlds.get(self.table.selected())
+
+    def _open_folder(self) -> None:
+        from ...core.util import open_in_file_manager
+
+        info = self._selected()
+        target = info.path if info is not None else self.manager.instances.saves_dir(self.instance.name)
+        open_in_file_manager(target)
+
+    def _export(self) -> None:
+        info = self._selected()
+        if info is None:
+            show_info(self.app, "Выберите мир в списке.")
+            return
+        target = filedialog.asksaveasfilename(
+            parent=self,
+            title="Куда сохранить мир",
+            defaultextension=".zip",
+            initialfile=self.manager.instances.world_backup_name(self.instance.name, info.name),
+            filetypes=[("Архив", "*.zip"), ("Все файлы", "*.*")],
+        )
+        if not target:
+            return
+        self.app.run_task(
+            f"Экспорт мира «{info.name}»",
+            lambda reporter: self.manager.export_world(
+                self.instance, info.name, target, reporter=reporter
+            ),
+            on_done=lambda path: self.app.log(f"Мир сохранён в {path}"),
+        )
+
+    def _import(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Выберите архив мира",
+            filetypes=[("Архив", "*.zip"), ("Все файлы", "*.*")],
+        )
+        if not path:
+            return
+
+        def done(info) -> None:
+            self.app.log(f"Импортирован мир «{info.name}»")
+            self._reload()
+
+        self.app.run_task(
+            "Импорт мира",
+            lambda reporter: self.manager.import_world(self.instance, path, reporter=reporter),
+            on_done=done,
+        )
+
+    def _delete(self) -> None:
+        info = self._selected()
+        if info is None:
+            show_info(self.app, "Выберите мир в списке.")
+            return
+        if not ask_yes_no(
+            self.app,
+            f"Удалить мир «{info.name}»?\nЭто действие нельзя отменить.",
+            "Удаление мира",
+        ):
+            return
+        try:
+            self.manager.delete_world(self.instance, info.name)
+        except Exception as error:  # noqa: BLE001
+            show_error(self.app, error)
+            return
+        self.app.log(f"Мир «{info.name}» удалён")
+        self._reload()
+
+    def _backup_all(self) -> None:
+        if not self._worlds:
+            show_info(self.app, "Нет миров для резервной копии.")
+            return
+        target = filedialog.asksaveasfilename(
+            parent=self,
+            title="Куда сохранить все миры",
+            defaultextension=".zip",
+            initialfile=f"{self.instance.name}-saves.zip",
+            filetypes=[("Архив", "*.zip"), ("Все файлы", "*.*")],
+        )
+        if not target:
+            return
+        self.app.run_task(
+            f"Копия миров «{self.instance.display_name}»",
+            lambda reporter: self.manager.backup_worlds(
+                self.instance, target, reporter=reporter
+            ),
+            on_done=lambda path: self.app.log(f"Миры сохранены в {path}"),
+        )
+
+
 class InstancesView(BaseView):
     title = "Экземпляры"
     subtitle = "Отдельные установки игры со своими модами и настройками"
@@ -224,7 +576,10 @@ class InstancesView(BaseView):
         self.play_button = ttk.Button(actions, text="Играть", style="Accent.TButton", command=self._play)
         self.play_button.pack(fill="x")
         ttk.Button(actions, text="Установить / обновить", command=self._install).pack(fill="x", pady=(8, 0))
+        ttk.Button(actions, text="Настройки…", command=self._open_settings).pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="Моды", command=self._open_mods).pack(fill="x", pady=(8, 0))
+        ttk.Button(actions, text="Миры…", command=self._open_worlds).pack(fill="x", pady=(8, 0))
+        ttk.Button(actions, text="Проверить файлы", command=self._verify_files).pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="Проверить обновления", command=self._check_updates).pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="Бэкап миров…", command=self._backup_worlds).pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="Открыть каталог", style="Ghost.TButton", command=self._open_dir).pack(fill="x", pady=(8, 0))
@@ -434,6 +789,8 @@ class InstancesView(BaseView):
             return
 
         def work(reporter):
+            reporter.status("Сопоставление модов с Modrinth…")
+            self.manager.match_manual_mods(instance, reporter=reporter)
             return (
                 self.manager.check_project_updates(instance),
                 self.manager.check_modpack_update(instance),
@@ -491,3 +848,74 @@ class InstancesView(BaseView):
         from ...core.util import open_in_file_manager
 
         open_in_file_manager(self.manager.instances.game_dir(instance.name))
+
+    def _open_settings(self) -> None:
+        instance = self._current()
+        if instance is None:
+            show_info(self.app, "Выберите экземпляр.")
+            return
+        dialog = InstanceSettingsDialog(self.app, self.manager, instance)
+        self.wait_window(dialog)
+        if dialog.result:
+            self.app.log(f"Настройки «{instance.display_name}» сохранены")
+            self.reload()
+            self.app.refresh_all()
+
+    def _open_worlds(self) -> None:
+        instance = self._current()
+        if instance is None:
+            show_info(self.app, "Выберите экземпляр.")
+            return
+        WorldsDialog(self.app, self.manager, instance)
+
+    def _verify_files(self) -> None:
+        instance = self._current()
+        if instance is None:
+            show_info(self.app, "Выберите экземпляр.")
+            return
+        if not instance.version_id:
+            show_info(self.app, "Сначала установите версию экземпляра.")
+            return
+
+        def work(reporter):
+            return self.manager.verify_instance(instance, reporter=reporter)
+
+        def done(report) -> None:
+            from ..widgets import ask_yes_no
+
+            if report.ok:
+                show_info(self.app, report.summary(), "Проверка файлов")
+                return
+            detail = "\n".join(
+                f"• {issue.title}: {issue.path.name} ({issue.reason})"
+                for issue in report.issues[:20]
+            )
+            total = len(report.issues)
+            message = (
+                f"Найдено проблем: {total}\n\n{detail}"
+                + ("\n…" if total > 20 else "")
+                + "\n\nПопробовать исправить (докачать повреждённые файлы)?"
+            )
+            if not ask_yes_no(self.app, message, "Проверка файлов"):
+                return
+
+            def repair_work(reporter):
+                return self.manager.verify_instance(
+                    instance, repair=True, reporter=reporter
+                )
+
+            def repaired(result) -> None:
+                show_info(
+                    self.app,
+                    result.summary(),
+                    "Восстановление файлов",
+                )
+                self.app.refresh_all()
+
+            self.run_task(
+                f"Восстановление «{instance.display_name}»",
+                repair_work,
+                on_done=repaired,
+            )
+
+        self.run_task(f"Проверка «{instance.display_name}»", work, on_done=done)
