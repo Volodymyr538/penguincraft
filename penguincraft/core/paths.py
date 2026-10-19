@@ -1,6 +1,7 @@
 """Пути, используемые лаунчером.
 
-Структура каталога данных (по умолчанию ``~/.local/share/penguincraft``)::
+Структура каталога данных (по умолчанию ``~/.local/share/penguincraft``
+в Linux/ChromeOS и ``%LOCALAPPDATA%\\PenguinCraft`` в Windows)::
 
     <root>/
         settings.json          настройки
@@ -23,7 +24,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .. import APP_ID
+from .. import APP_ID, APP_NAME
+from .util import is_windows
 
 #: Переменная окружения, переопределяющая каталог данных лаунчера.
 ENV_ROOT = "PENGUINCRAFT_HOME"
@@ -37,11 +39,20 @@ ACCOUNTS_FILE = "accounts.json"
 def default_root() -> Path:
     """Каталог данных лаунчера по умолчанию.
 
-    На Chromebook'ах (Crostini) это место доступно и не требует root.
+    * Linux/ChromeOS (Crostini) — ``~/.local/share/penguincraft``
+      (уважает ``XDG_DATA_HOME``), доступно без root.
+    * Windows — ``%LOCALAPPDATA%\\PenguinCraft`` (а не роуминг-профиль:
+      ресурсы и библиотеки игры весят гигабайты и не должны попадать
+      в синхронизацию).
     """
     env = os.environ.get(ENV_ROOT)
     if env:
         return Path(env).expanduser()
+    if is_windows():
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            return Path(base) / APP_NAME
+        return Path.home() / "AppData" / "Local" / APP_NAME
     xdg = os.environ.get("XDG_DATA_HOME")
     if xdg:
         base = Path(xdg).expanduser()

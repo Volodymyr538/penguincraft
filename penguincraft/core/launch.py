@@ -17,6 +17,7 @@ from .installer import InstallPlan
 from .paths import Paths
 from .rules import default_platform, resolve_arguments, substitute_all
 from .settings import InstanceConfig, Settings
+from .util import split_args as _split_args
 
 
 class LaunchError(Exception):
@@ -189,10 +190,7 @@ def build_command(
 
     custom_game = (instance.game_args or "").strip() or (settings.game_args or "").strip()
     if custom_game:
-        try:
-            argv.extend(shlex.split(custom_game))
-        except ValueError:
-            argv.extend(custom_game.split())
+        argv.extend(_split_args(custom_game))
     argv.extend(extra_game_args or [])
 
     # --- окружение --------------------------------------------------------
@@ -200,7 +198,9 @@ def build_command(
     env.setdefault("JAVA_HOME", str(plan.java.home))
     if settings.force_lwjgl_software:
         env["LIBGL_ALWAYS_SOFTWARE"] = "1"
-    env["MESA_LOADER_DRIVER_OVERRIDE"] = env.get("MESA_LOADER_DRIVER_OVERRIDE", "")
+    if not sys.platform.startswith("win"):
+        # Переменные Mesa имеют смысл только под Linux (Crostini/слабые GPU).
+        env["MESA_LOADER_DRIVER_OVERRIDE"] = env.get("MESA_LOADER_DRIVER_OVERRIDE", "")
 
     log_dir = paths.logs
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -354,8 +354,10 @@ class GameProcess:
 def spawn(command: LaunchCommand) -> GameProcess:
     """Запускает игру отдельным процессом."""
     creationflags = 0
-    if sys.platform.startswith("win"):  # pragma: no cover
+    new_session = True
+    if sys.platform.startswith("win"):  # pragma: no cover - только Windows
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        new_session = False  # start_new_session — только для POSIX
     try:
         process = subprocess.Popen(
             command.argv,
@@ -368,7 +370,7 @@ def spawn(command: LaunchCommand) -> GameProcess:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            start_new_session=True,
+            start_new_session=new_session,
             creationflags=creationflags,
         )
     except FileNotFoundError as error:

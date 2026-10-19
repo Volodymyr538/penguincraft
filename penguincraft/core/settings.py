@@ -389,9 +389,6 @@ class InstanceConfig:
 
 def _split_args(text: str) -> List[str]:
     """Разбирает строку аргументов с поддержкой кавычек."""
-    import shlex
+    from .util import split_args
 
-    try:
-        return shlex.split(text)
-    except ValueError:
-        return text.split()
+    return split_args(text)

@@ -14,17 +14,28 @@ import subprocess
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
+from shutil import which
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .net import Http
 from .paths import Paths
 from .task import Reporter
-from .util import extract_tar_gz, platform_arch
+from .util import extract_tar_gz, extract_zip, is_macos, is_windows, platform_arch
 
 ADOPTIUM_BINARY = (
     "https://api.adoptium.net/v3/binary/latest/{major}/ga/{os}/{arch}/jre/hotspot/normal/eclipse"
 )
 _ADOPTIUM_OS = {"linux": "linux", "windows": "windows", "osx": "mac"}
+
+#: Имя исполняемого файла Java на текущей платформе.
+JAVA_EXE = "java.exe" if os.name == "nt" else "java"
+
+#: Относительные пути к ``java`` внутри каталога JDK/JRE.
+_JAVA_RELATIVE = (
+    f"bin/{JAVA_EXE}",
+    f"Contents/Home/bin/{JAVA_EXE}",
+    f"jre/bin/{JAVA_EXE}",
+)
 
 _VERSION_RE = re.compile(r'version "([^"]+)"')
 
@@ -188,23 +199,13 @@ def _candidate_paths() -> List[Tuple[Path, str]]:
 
     java_home = os.environ.get("JAVA_HOME")
     if java_home:
-        candidates.append((Path(java_home) / "bin" / "java", "java_home"))
-
-    from shutil import which
+        candidates.append((Path(java_home) / "bin" / JAVA_EXE, "java_home"))
 
     on_path = which("java")
     if on_path:
         candidates.append((Path(on_path), "system"))
 
-    # Linux-специфичные каталоги (Debian/Ubuntu, Crostini, Fedora, Arch)
-    roots = [
-        Path("/usr/lib/jvm"),
-        Path("/usr/java"),
-        Path("/opt/java"),
-        Path("/opt"),
-        Path.home() / ".jdks",
-        Path.home() / ".sdkman" / "candidates" / "java",
-    ]
+    roots = _java_roots()
     for root in roots:
         if not root.is_dir():
             continue
@@ -215,11 +216,69 @@ def _candidate_paths() -> List[Tuple[Path, str]]:
         for entry in entries:
             if not entry.is_dir():
                 continue
-            for relative in ("bin/java", "Contents/Home/bin/java", "jre/bin/java"):
+            for relative in _JAVA_RELATIVE:
                 candidate = entry / relative
                 if candidate.is_file():
                     candidates.append((candidate, "system"))
     return candidates
+
+
+def _java_roots(windows: Optional[bool] = None) -> List[Path]:
+    """Каталоги, в которых принято искать установленные JDK/JRE.
+
+    ``windows`` можно задать явно — это нужно автотестам, которые иначе
+    не могут проверить вторую ветку с машины с другой ОС.
+    """
+    if windows is None:
+        windows = is_windows()
+    if windows:
+        roots: List[Path] = []
+        for variable in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+            base = os.environ.get(variable)
+            if not base:
+                continue
+            base_path = Path(base)
+            for vendor in (
+                "Java",
+                "Eclipse Adoptium",
+                "Eclipse Foundation",
+                "Microsoft",
+                "Zulu",
+                "Amazon Corretto",
+                "BellSoft",
+                "BellSoft\\Liberica",
+                "Common Files\\Oracle\\Java\\javapath",
+                "",
+            ):
+                roots.append(base_path / vendor if vendor else base_path)
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            programs = Path(local) / "Programs"
+            roots.extend(
+                [
+                    programs / "Eclipse Adoptium",
+                    programs / "Java",
+                    programs / "Microsoft",
+                    programs / "Zulu",
+                    programs,
+                ]
+            )
+        for variable in ("JDK_HOME", "JRE_HOME"):
+            value = os.environ.get(variable)
+            if value:
+                roots.append(Path(value))
+        roots.append(Path.home() / ".jdks")
+        return roots
+
+    # Linux-специфичные каталоги (Debian/Ubuntu, Crostini, Fedora, Arch)
+    return [
+        Path("/usr/lib/jvm"),
+        Path("/usr/java"),
+        Path("/opt/java"),
+        Path("/opt"),
+        Path.home() / ".jdks",
+        Path.home() / ".sdkman" / "candidates" / "java",
+    ]
 
 
 def find_installed_java(paths: Optional[Paths] = None) -> List[JavaRuntime]:
@@ -278,7 +337,7 @@ def list_managed_runtimes(paths: Paths) -> List[JavaRuntime]:
         for entry in sorted(paths.runtimes.iterdir()):
             if not entry.is_dir():
                 continue
-            for relative in ("bin/java", "Contents/Home/bin/java"):
+            for relative in _JAVA_RELATIVE:
                 candidate = entry / relative
                 if candidate.is_file():
                     runtime = probe_java(candidate, source="downloaded", managed=True)
@@ -297,10 +356,13 @@ def save_managed_runtimes(paths: Paths, runtimes: Iterable[JavaRuntime]) -> None
 
 
 def _adoptium_url(major: int, arch: str) -> str:
-    import platform as _platform
-
-    system = _platform.system().lower()
-    os_name = _ADOPTIUM_OS.get("osx" if system == "darwin" else system, "linux")
+    if is_windows():
+        system = "windows"
+    elif is_macos():
+        system = "osx"
+    else:
+        system = "linux"
+    os_name = _ADOPTIUM_OS.get(system, "linux")
     if arch not in ("x64", "aarch64"):
         arch = "x64"
     return ADOPTIUM_BINARY.format(major=major, os=os_name, arch=arch)
@@ -321,7 +383,9 @@ def download_java(
         reporter.status(f"Загрузка Java {major} (Temurin, ~45 МБ)…")
 
     paths.runtimes.mkdir(parents=True, exist_ok=True)
-    archive = paths.downloads / f"jre-{major}-{arch}.tar.gz"
+    # Adoptium отдаёт под Windows zip-архив, под Linux/macOS — tar.gz.
+    suffix = ".zip" if is_windows() else ".tar.gz"
+    archive = paths.downloads / f"jre-{major}-{arch}{suffix}"
     archive.parent.mkdir(parents=True, exist_ok=True)
     http.download(url, archive, reporter=reporter)
 
@@ -335,12 +399,10 @@ def download_java(
         reporter.status(f"Распаковка Java {major}…")
 
     try:
-        if archive.suffixes[-2:] == [".tar", ".gz"] or archive.name.endswith(".tar.gz"):
-            extract_tar_gz(archive, staging)
-        else:  # pragma: no cover - на случай zip-сборок
-            from .util import extract_zip
-
+        if archive.name.endswith(".zip"):
             extract_zip(archive, staging)
+        else:
+            extract_tar_gz(archive, staging)
     except (tarfile.TarError, OSError) as error:
         raise RuntimeError(f"Не удалось распаковать Java: {error}") from error
 
@@ -378,7 +440,7 @@ def download_java(
 
 
 def _find_java_in(root: Path) -> Optional[Path]:
-    for relative in ("bin/java", "Contents/Home/bin/java"):
+    for relative in _JAVA_RELATIVE:
         direct = root / relative
         if direct.is_file():
             return direct
@@ -451,11 +513,19 @@ def ensure_java(
     if not allow_download:
         if chosen is not None:
             return chosen
-        raise RuntimeError(
-            f"Не найдена Java {required_major}. Установите её командой "
-            f"«sudo apt install openjdk-{required_major}-jre-headless» "
-            "или включите авто-загрузку Java в настройках."
-        )
+        if is_windows():
+            hint = (
+                f"Не найдена Java {required_major}. Установите Temurin/OpenJDK "
+                f"{required_major} с https://adoptium.net или включите "
+                "авто-загрузку Java в настройках."
+            )
+        else:
+            hint = (
+                f"Не найдена Java {required_major}. Установите её командой "
+                f"«sudo apt install openjdk-{required_major}-jre-headless» "
+                "или включите авто-загрузку Java в настройках."
+            )
+        raise RuntimeError(hint)
     if reporter:
         reporter.status(f"Подходящая Java {required_major} не найдена — скачиваем…")
     runtime = download_java(paths, required_major, http, reporter=reporter)

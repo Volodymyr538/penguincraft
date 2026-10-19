@@ -11,7 +11,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, List, Optional
 
 # ---------------------------------------------------------------------------
 # Хеши
@@ -182,11 +182,24 @@ class MavenCoordinate:
 
 _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
+#: Имена, которые Windows не разрешает для файлов и каталогов.
+_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
 
 def sanitize_name(name: str, fallback: str = "instance") -> str:
-    """Приводит произвольную строку к безопасному имени каталога."""
+    """Приводит произвольную строку к безопасному имени каталога.
+
+    Учитывает ограничения Windows: недопустимые символы, имена устройств
+    (``CON``, ``NUL``, ``COM1``…) и завершающие точки/пробелы.
+    """
     cleaned = _ILLEGAL.sub("_", name).strip().strip(".")
-    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if cleaned and cleaned.split(".")[0].upper() in _RESERVED_NAMES:
+        cleaned = "_" + cleaned
     if not cleaned:
         cleaned = fallback
     return cleaned[:120]
@@ -218,6 +231,10 @@ def human_size(num: float) -> str:
 
 def total_memory_mb() -> int:
     """Объём оперативной памяти в мегабайтах (для авто-подбора -Xmx)."""
+    if os.name == "nt":
+        value = _windows_total_memory_mb()
+        if value:
+            return value
     try:
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // (1024 * 1024)
     except (ValueError, OSError, AttributeError):
@@ -230,6 +247,33 @@ def total_memory_mb() -> int:
     except OSError:
         pass
     return 4096
+
+
+def _windows_total_memory_mb() -> int:  # pragma: no cover - только Windows
+    """Физическая память через ``GlobalMemoryStatusEx`` (без сторонних модулей)."""
+    try:
+        import ctypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.ullTotalPhys) // (1024 * 1024)
+    except (OSError, AttributeError, ValueError):
+        pass
+    return 0
 
 
 def cpu_count() -> int:
@@ -245,6 +289,32 @@ def is_chromebook() -> bool:
             return "chromeos" in handle.read().lower()
     except OSError:
         return False
+
+
+def is_windows() -> bool:
+    """Работаем ли мы под Windows."""
+    return os.name == "nt"
+
+
+def is_macos() -> bool:
+    """Работаем ли мы под macOS."""
+    return sys.platform == "darwin"
+
+
+def split_args(text: str) -> List[str]:
+    """Разбирает строку аргументов с поддержкой кавычек.
+
+    На Windows пути пишутся через обратный слэш, поэтому ``shlex`` следует
+    вызывать в не-POSIX режиме — иначе ``C:\\Java`` превратится в ``C:Java``.
+    """
+    import shlex
+
+    if not text.strip():
+        return []
+    try:
+        return shlex.split(text, posix=not is_windows())
+    except ValueError:
+        return text.split()
 
 
 def platform_arch() -> str:

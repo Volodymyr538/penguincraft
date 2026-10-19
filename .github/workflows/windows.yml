@@ -1,0 +1,109 @@
+name: Windows
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Тесты (Windows, Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Настроить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Версия и окружение
+        run: |
+          python --version
+          python -c "import sys, tkinter; print(sys.executable, 'tk', tkinter.TkVersion)"
+
+      - name: Проверить синтаксис (compileall)
+        run: python -m compileall -q penguincraft
+
+      - name: Автотесты
+        run: python -m unittest discover -s tests -t . -v
+
+  build:
+    name: Сборка установщика .exe
+    runs-on: windows-latest
+    needs: tests
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Настроить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Установить PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Убедиться, что есть Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            Write-Host "Inno Setup не найден — устанавливаем через Chocolatey"
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Собрать .exe и установщик
+        run: python packaging/windows/build.py
+
+      - name: Показать артефакты
+        shell: pwsh
+        run: Get-ChildItem dist -Filter *.exe | Select-Object Name, Length
+
+      - name: Загрузить .exe как артефакт сборки
+        uses: actions/upload-artifact@v4
+        with:
+          name: PenguinCraft-windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+  release:
+    name: Приложить .exe к релизу
+    runs-on: windows-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Скачать собранные .exe
+        uses: actions/download-artifact@v4
+        with:
+          name: PenguinCraft-windows
+          path: dist
+
+      - name: Приложить файлы к релизу
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $files = Get-ChildItem dist -Filter *.exe | ForEach-Object { $_.FullName }
+          if (-not $files) { throw "Нет файлов .exe для загрузки" }
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "PenguinCraft $tag" --generate-notes
+          }
+          gh release upload $tag @files --clobber

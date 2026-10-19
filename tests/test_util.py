@@ -7,7 +7,9 @@ import unittest
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
+from penguincraft.core import util as util_module
 from penguincraft.core.util import (
     MavenCoordinate,
     extract_zip,
@@ -15,6 +17,8 @@ from penguincraft.core.util import (
     human_size,
     platform_arch,
     sanitize_name,
+    split_args,
+    total_memory_mb,
 )
 
 
@@ -30,6 +34,46 @@ class SanitizeNameTests(unittest.TestCase):
 
     def test_truncates_to_120(self) -> None:
         self.assertEqual(len(sanitize_name("x" * 500)), 120)
+
+    def test_reserved_windows_names(self) -> None:
+        # Windows не даст создать каталог с таким именем.
+        self.assertEqual(sanitize_name("CON"), "_CON")
+        self.assertEqual(sanitize_name("nul"), "_nul")
+        self.assertEqual(sanitize_name("COM1"), "_COM1")
+        self.assertEqual(sanitize_name("lpt9.txt"), "_lpt9.txt")
+        # «CONSOLE» — не зарезервировано.
+        self.assertEqual(sanitize_name("CONSOLE"), "CONSOLE")
+
+    def test_no_trailing_space(self) -> None:
+        self.assertEqual(sanitize_name("Сборка   "), "Сборка")
+
+
+class SplitArgsTests(unittest.TestCase):
+    def test_posix_quotes(self) -> None:
+        self.assertEqual(split_args('--demo -Xmx2G "мой мир"'), ["--demo", "-Xmx2G", "мой мир"])
+
+    def test_empty(self) -> None:
+        self.assertEqual(split_args("   "), [])
+
+    def test_windows_backslashes(self) -> None:
+        # Без posix=False обратные слэши «съедаются», и путь ломается.
+        with mock.patch.object(util_module.os, "name", "nt"):
+            self.assertEqual(
+                split_args(r"-Djava.home=C:\Java\jdk-21"),
+                [r"-Djava.home=C:\Java\jdk-21"],
+            )
+
+    def test_broken_quotes_do_not_crash(self) -> None:
+        self.assertEqual(split_args('"не закрытая'), ['"не', "закрытая"])
+
+
+class TotalMemoryTests(unittest.TestCase):
+    def test_positive(self) -> None:
+        self.assertGreater(total_memory_mb(), 0)
+
+    def test_windows_helper_never_raises(self) -> None:
+        # На Linux ядро Windows недоступно — просто возвращаем 0.
+        self.assertIsInstance(util_module._windows_total_memory_mb(), int)
 
 
 class HumanSizeTests(unittest.TestCase):

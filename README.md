@@ -3,10 +3,10 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/Volodymyr538/penguincraft/actions/workflows/ci.yml/badge.svg)](https://github.com/Volodymyr538/penguincraft/actions/workflows/ci.yml)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
-[![Platform: Linux / ChromeOS](https://img.shields.io/badge/platform-Linux%20%2F%20ChromeOS-informational.svg)](https://github.com/Volodymyr538/penguincraft)
+[![Platform: Linux / ChromeOS / Windows](https://img.shields.io/badge/platform-Linux%20%7C%20ChromeOS%20%7C%20Windows-informational.svg)](#установка)
 
-Лёгкий лаунчер Minecraft для Linux и ChromeOS (Crostini), написанный
-на чистом Python 3 и tkinter — **без сторонних зависимостей**.
+Лёгкий лаунчер Minecraft для Linux, ChromeOS (Crostini) и Windows,
+написанный на чистом Python 3 и tkinter — **без сторонних зависимостей**.
 
 Оптимизирован под хромбуки: минимум библиотек, автоматическая загрузка
 нужной версии Java, экономные профили JVM, экономия диска за счёт общих
@@ -61,6 +61,28 @@
 
 ## Установка
 
+### Windows
+
+Готовые файлы — в разделе [Releases](https://github.com/Volodymyr538/penguincraft/releases):
+
+| Файл | Что это |
+|---|---|
+| `PenguinCraft-1.3.0-setup.exe` | обычный установщик (права администратора не нужны) |
+| `PenguinCraft-1.3.0-portable.exe` | один файл, ничего не устанавливает |
+
+Установщик кладёт лаунчер в `%LOCALAPPDATA%\Programs\PenguinCraft`,
+добавляет ярлыки и удаляется штатным образом через «Установка и удаление
+программ». Ни Python, ни Java ставить заранее не нужно: Python уже внутри
+`.exe`, а Java лаунчер скачает сам.
+
+Данные (библиотеки, ресурсы, экземпляры) живут в
+`%LOCALAPPDATA%\PenguinCraft` и при удалении лаунчера сохраняются.
+
+> Собрать `.exe` самостоятельно можно только на Windows — см. раздел
+> [Сборка дистрибутивов](#сборка-дистрибутивов).
+
+### Linux / ChromeOS (Crostini)
+
 Нужен **Python 3.9+** и **tkinter** (иногда идёт отдельным пакетом):
 
 ```bash
@@ -75,8 +97,8 @@ sudo apt install -y python3 python3-tk
 добавляет пункт в меню «Linux-приложения»:
 
 ```bash
-sh PenguinCraft-1.2.0-installer.sh              # установить или обновить
-sh PenguinCraft-1.2.0-installer.sh --uninstall  # удалить
+sh PenguinCraft-1.3.0-installer.sh              # установить или обновить
+sh PenguinCraft-1.3.0-installer.sh --uninstall  # удалить
 ```
 
 Запуск — из меню ChromeOS (`Linux-приложения` → PenguinCraft) или командой
@@ -92,7 +114,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ### Вариант 2 — пакет .deb (системная установка)
 
 ```bash
-sudo apt install ./penguincraft_1.2.0_all.deb
+sudo apt install ./penguincraft_1.3.0_all.deb
 penguincraft            # или из меню приложений
 sudo apt remove penguincraft
 ```
@@ -115,6 +137,8 @@ cd penguincraft
 
 ## Сборка дистрибутивов
 
+### Linux / ChromeOS
+
 Готовых файлов нет в репозитории? Соберите их сами — нужен только
 `dpkg-deb` (есть в Debian/Crostini по умолчанию):
 
@@ -136,6 +160,33 @@ cd penguincraft
 > AppImage потребовал бы упаковывать их внутрь и работал бы только при
 > наличии FUSE (`libfuse2`), что на Crostini капризно. Установщик и `.deb`
 > используют системный Python — проще, меньше по размеру и надёжнее.
+
+### Windows
+
+PyInstaller не умеет кросс-компиляцию, поэтому `.exe` собирается **на
+Windows**. Нужны Python 3.9+, `pyinstaller` и (для установщика) Inno Setup 6:
+
+```powershell
+python -m pip install pyinstaller
+python packaging\windows\build.py              # .exe + установщик
+python packaging\windows\build.py --portable-only   # только переносимый .exe
+```
+
+На выходе в `dist/`:
+
+| Файл | Что это |
+|---|---|
+| `PenguinCraft-<версия>-portable.exe` | один файл, ничего не устанавливает |
+| `PenguinCraft-<версия>-setup.exe` | установщик в профиль пользователя |
+
+Сторонний пакет (PyInstaller) нужен **только при сборке** — сам лаунчер
+по-прежнему обходится стандартной библиотекой. Иконка `.ico` делается
+скриптом `packaging/windows/make_icon.py` из того же PNG-файла, что и в
+Linux-сборке, без сторонних библиотек.
+
+Всё это автоматически собирает workflow
+`.github/workflows/windows.yml`; по тегу вида `v1.3.0` файлы `.exe`
+прикладываются к релизу.
 
 
 ---
@@ -205,11 +256,12 @@ penguincraft update-mods
 
 ## Каталог данных
 
-По умолчанию — `~/.local/share/penguincraft`. Переопределяется
-переменной `PENGUINCRAFT_HOME` или флагом `--root`.
+По умолчанию — `~/.local/share/penguincraft` (Linux/ChromeOS) или
+`%LOCALAPPDATA%\PenguinCraft` (Windows). Переопределяется переменной
+`PENGUINCRAFT_HOME` или флагом `--root`.
 
 ```
-~/.local/share/penguincraft/
+<каталог данных>/
 ├── settings.json          настройки
 ├── accounts.json          аккаунты (права 600)
 ├── versions/              описания и клиентские jar'ы версий
@@ -268,9 +320,11 @@ penguincraft/
 tests/          автотесты (unittest, без сети и графики)
 
 packaging/
-├── build.sh        сборка .deb и установщика в dist/
+├── build.sh        сборка .deb и установщика в dist/ (Linux)
 ├── installer.sh.in шаблон самораспаковывающегося установщика
-└── deb/            файлы пакета: control, postinst, postrm, copyright
+├── deb/            файлы пакета: control, postinst, postrm, copyright
+└── windows/        сборка .exe: build.py, PyInstaller-обёртка,
+                    скрипт Inno Setup, генератор иконки .ico
 ```
 
 ---
@@ -283,9 +337,18 @@ packaging/
 python3 -m unittest discover -s tests -t .
 ```
 
-В репозитории есть workflow GitHub Actions
-(`.github/workflows/ci.yml`), который проверяет синтаксис, отсутствие
-сторонних импортов и прогоняет тесты на Python 3.9–3.13.
+В репозитории есть два workflow GitHub Actions:
+
+- `.github/workflows/ci.yml` — проверяет синтаксис, отсутствие сторонних
+  импортов и прогоняет тесты на Python 3.9–3.13 (Linux);
+- `.github/workflows/windows.yml` — те же тесты под Windows и сборка
+  `.exe`/установщика.
+
+Тесты можно запустить и на Windows:
+
+```powershell
+python -m unittest discover -s tests -t .
+```
 
 ---
 

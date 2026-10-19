@@ -4,6 +4,32 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии — по [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [1.3.0] — 2026-10-19
+
+### Добавлено
+
+- **Поддержка Windows** — лаунчер полноценно работает под Windows 10/11:
+  - каталог данных — `%LOCALAPPDATA%\PenguinCraft` (специально не роуминг-
+    профиль: библиотеки и ресурсы игры весят гигабайты);
+  - поиск уже установленной Java в привычных местах (`Program Files\Java`,
+    `Eclipse Adoptium`, `Microsoft`, `Zulu`, `Amazon Corretto`,
+    `%LOCALAPPDATA%\Programs`) с учётом `java.exe`;
+  - авто-загрузка JRE с Adoptium под Windows берёт `zip`-архив;
+  - авто-подбор объёма памяти через `GlobalMemoryStatusEx`;
+  - корректный разбор аргументов JVM и игры с обратными слэшами
+    (`C:\Java\jdk-21`) и запуск процесса без POSIX-специфичных флагов.
+- **Переносимый `.exe` и установщик** — собираются на Windows командой
+  `python packaging\windows\build.py` (PyInstaller + Inno Setup):
+  - `PenguinCraft-<версия>-setup.exe` — установщик в профиль пользователя
+    (без прав администратора), с ярлыками в меню «Пуск» и удалением;
+  - `PenguinCraft-<версия>-portable.exe` — один файл, ничего не
+    устанавливает.
+- Безопасные имена экземпляров с учётом ограничений Windows: недопустимые
+  символы, зарезервированные устройства (`CON`, `NUL`, `COM1`…),
+  завершающие точки и пробелы.
+- Отдельный workflow GitHub Actions: автотесты под Windows и сборка `.exe`;
+  по тегу файлы автоматически прикладываются к релизу.
+
 ## [1.2.0] — 2026-10-19
 
 ### Добавлено
@@ -126,5 +152,6 @@
 - Иконки проектов Modrinth отображаются, только если они в формате PNG;
   webp/jpeg пропускаются без ошибки.
 
+[1.3.0]: https://github.com/Volodymyr538/penguincraft/releases/tag/v1.3.0
 [1.1.0]: https://github.com/Volodymyr538/penguincraft/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Volodymyr538/penguincraft/releases/tag/v1.0.0

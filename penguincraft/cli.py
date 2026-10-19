@@ -489,7 +489,7 @@ def cmd_gui(manager: LauncherManager, args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="penguincraft",
-        description=f"{APP_NAME} {APP_VERSION} — лёгкий лаунчер Minecraft для Linux и ChromeOS",
+        description=f"{APP_NAME} {APP_VERSION} — лёгкий лаунчер Minecraft для Linux, ChromeOS и Windows",
     )
     parser.add_argument("--root", help="каталог данных лаунчера")
     parser.add_argument("-v", "--verbose", action="store_true", help="подробный вывод")
