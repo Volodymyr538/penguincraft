@@ -98,9 +98,9 @@ class JavaPlatformTests(unittest.TestCase):
 
     def test_posix_roots_unchanged(self) -> None:
         roots = java._java_roots(windows=False)
-        text = [str(item) for item in roots]
-        self.assertIn("/usr/lib/jvm", text)
-        self.assertNotIn("ProgramFiles", text)
+        self.assertIn(Path("/usr/lib/jvm"), roots)
+        self.assertIn(Path("/opt"), roots)
+        self.assertFalse(any("ProgramFiles" in str(item) for item in roots))
 
     def test_candidates_include_java_home(self) -> None:
         with TemporaryDirectory() as tmp:

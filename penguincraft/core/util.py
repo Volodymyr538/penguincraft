@@ -304,15 +304,26 @@ def is_macos() -> bool:
 def split_args(text: str) -> List[str]:
     """Разбирает строку аргументов с поддержкой кавычек.
 
-    На Windows пути пишутся через обратный слэш, поэтому ``shlex`` следует
-    вызывать в не-POSIX режиме — иначе ``C:\\Java`` превратится в ``C:Java``.
+    Кавычки снимаются на всех платформах.  Разница только в обратных
+    слэшах: на Windows это разделитель пути (``C:\\Java\\jdk-21``), а не
+    escape-символ, поэтому экранирование там отключено — иначе путь
+    превратился бы в ``C:Javajdk-21``.
     """
-    import shlex
-
     if not text.strip():
         return []
+    import shlex
+
+    if is_windows():
+        lexer = shlex.shlex(text, posix=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        lexer.escape = ""
+        try:
+            return list(lexer)
+        except ValueError:
+            return text.split()
     try:
-        return shlex.split(text, posix=not is_windows())
+        return shlex.split(text)
     except ValueError:
         return text.split()
 

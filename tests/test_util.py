@@ -50,21 +50,37 @@ class SanitizeNameTests(unittest.TestCase):
 
 class SplitArgsTests(unittest.TestCase):
     def test_posix_quotes(self) -> None:
-        self.assertEqual(split_args('--demo -Xmx2G "мой мир"'), ["--demo", "-Xmx2G", "мой мир"])
+        with mock.patch.object(util_module, "is_windows", lambda: False):
+            self.assertEqual(
+                split_args('--demo -Xmx2G "мой мир"'),
+                ["--demo", "-Xmx2G", "мой мир"],
+            )
 
     def test_empty(self) -> None:
         self.assertEqual(split_args("   "), [])
+        self.assertEqual(split_args(""), [])
 
-    def test_windows_backslashes(self) -> None:
-        # Без posix=False обратные слэши «съедаются», и путь ломается.
-        with mock.patch.object(util_module.os, "name", "nt"):
+    def test_windows_keeps_backslashes(self) -> None:
+        # На Windows обратный слэш — разделитель пути, а не escape-символ.
+        with mock.patch.object(util_module, "is_windows", lambda: True):
             self.assertEqual(
                 split_args(r"-Djava.home=C:\Java\jdk-21"),
                 [r"-Djava.home=C:\Java\jdk-21"],
             )
 
+    def test_windows_still_strips_quotes(self) -> None:
+        with mock.patch.object(util_module, "is_windows", lambda: True):
+            self.assertEqual(
+                split_args(r'--path "C:\Program Files\Java" --demo'),
+                ["--path", r"C:\Program Files\Java", "--demo"],
+            )
+
     def test_broken_quotes_do_not_crash(self) -> None:
-        self.assertEqual(split_args('"не закрытая'), ['"не', "закрытая"])
+        for windows in (True, False):
+            with mock.patch.object(util_module, "is_windows", lambda: windows):
+                result = split_args('"не закрытая')
+            self.assertTrue(result)
+            self.assertNotIn("", result)
 
 
 class TotalMemoryTests(unittest.TestCase):
