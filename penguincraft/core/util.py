@@ -301,6 +301,23 @@ def is_macos() -> bool:
     return sys.platform == "darwin"
 
 
+def ensure_utf8_console() -> None:
+    """Переключает стандартный вывод на UTF-8.
+
+    Консоль Windows по умолчанию использует cp1252/cp866 и падает с
+    ``UnicodeEncodeError`` на первой же кириллической строке.  Меняем
+    кодировку потока (сам шрифт консоли остаётся делом пользователя).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def split_args(text: str) -> List[str]:
     """Разбирает строку аргументов с поддержкой кавычек.
 

@@ -586,6 +586,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 def main(argv: Optional[List[str]] = None) -> int:
+    from .core.util import ensure_utf8_console
+
+    ensure_utf8_console()
     parser = build_parser()
     args = parser.parse_args(argv)
     manager = LauncherManager(args.root)

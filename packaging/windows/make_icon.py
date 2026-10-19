@@ -64,6 +64,15 @@ def make_icon(source: Path = DEFAULT_SOURCE, target: Path = DEFAULT_TARGET) -> P
 
 
 def main(argv: list[str]) -> int:
+    # Консоль Windows по умолчанию не в UTF-8 — иначе кириллица в print
+    # обрывает сборку.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
     source = Path(argv[1]) if len(argv) > 1 else DEFAULT_SOURCE
     target = Path(argv[2]) if len(argv) > 2 else DEFAULT_TARGET
     path = make_icon(source, target)

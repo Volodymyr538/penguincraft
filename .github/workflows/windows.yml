@@ -65,6 +65,9 @@ jobs:
 
       - name: Собрать .exe и установщик
         run: python packaging/windows/build.py
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
 
       - name: Показать артефакты
         shell: pwsh

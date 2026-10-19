@@ -36,6 +36,12 @@ WINDOWS = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
 BUILD = ROOT / "build" / "windows"
 
+# Пакет нужен только ради общей утилиты (UTF-8 в консоли Windows).
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from penguincraft.core.util import ensure_utf8_console  # noqa: E402
+
 LAUNCHER = WINDOWS / "launcher.py"
 ICON = WINDOWS / "penguincraft.ico"
 ISS = WINDOWS / "penguincraft.iss"
@@ -171,6 +177,7 @@ def build_installer(version: str, source: Path) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    ensure_utf8_console()
     parser = argparse.ArgumentParser(description="Собрать PenguinCraft для Windows")
     parser.add_argument("--portable-only", "--no-installer", action="store_true",
                         dest="portable_only", help="только переносимый .exe")

@@ -17,7 +17,7 @@ from unittest import mock
 
 from penguincraft import APP_NAME, APP_VERSION
 from penguincraft.core import java, paths
-from penguincraft.core.util import is_windows
+from penguincraft.core.util import ensure_utf8_console, is_windows
 
 ROOT = Path(__file__).resolve().parents[1]
 WINDOWS_PACKAGING = ROOT / "packaging" / "windows"
@@ -160,6 +160,17 @@ class JavaPlatformTests(unittest.TestCase):
                     java.download_java(Paths(Path(tmp)), 21, FakeHttp())
         self.assertTrue(str(captured["path"]).endswith("jre-21-x64.zip"))
         self.assertIn("/windows/", str(captured["url"]))
+
+
+class Utf8ConsoleTests(unittest.TestCase):
+    def test_does_not_raise_and_is_idempotent(self) -> None:
+        ensure_utf8_console()
+        ensure_utf8_console()
+
+    def test_survives_none_streams(self) -> None:
+        # В собранном --windowed exe потоки равны None.
+        with mock.patch.object(sys, "stdout", None), mock.patch.object(sys, "stderr", None):
+            ensure_utf8_console()
 
 
 class PackagingTests(unittest.TestCase):
