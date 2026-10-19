@@ -185,6 +185,9 @@ _HEAD_MODID = re.compile(r'\bmodId\s*=\s*"([^"]*)"')
 _HEAD_DISPLAY = re.compile(r'\bdisplayName\s*=\s*"([^"]*)"')
 _HEAD_VERSION = re.compile(r'\bversion\s*=\s*"([^"]*)"')
 _HEAD_DESC = re.compile(r'\bdescription\s*=\s*"([^"]*)"')
+_HEAD_AUTHORS = re.compile(r'\bauthors\s*=\s*"([^"]*)"')
+_HEAD_AUTHORS_LIST = re.compile(r'\bauthors\s*=\s*\[([^\]]*)\]')
+_QUOTED = re.compile(r'"([^"]*)"')
 
 
 def _forge_depends(data: Mapping[str, Any]) -> Dict[str, str]:
@@ -222,13 +225,17 @@ def _parse_toml_mods(raw: bytes, loader: str) -> Dict[str, Any]:
         first = mods[0]
         if isinstance(first, Mapping):
             raw_authors = first.get("authors") or ""
+            if isinstance(raw_authors, (list, tuple)):
+                authors = [str(item).strip() for item in raw_authors if str(item).strip()]
+            else:
+                authors = [item.strip() for item in str(raw_authors).split(",") if item.strip()]
             return {
                 "loader": loader,
                 "name": str(first.get("displayName") or first.get("modId") or ""),
                 "id": str(first.get("modId") or ""),
                 "version": str(first.get("version") or ""),
                 "description": str(first.get("description") or ""),
-                "authors": [item.strip() for item in str(raw_authors).split(",") if item.strip()],
+                "authors": authors,
                 "depends": _forge_depends(data),
             }
 
@@ -259,13 +266,24 @@ def _parse_toml_mods(raw: bytes, loader: str) -> Dict[str, Any]:
         match = pattern.search(source)
         return match.group(1) if match else ""
 
+    authors: List[str] = []
+    list_match = _HEAD_AUTHORS_LIST.search(head)
+    if list_match:
+        authors = [item for item in _QUOTED.findall(list_match.group(1)) if item]
+    else:
+        authors = [
+            item.strip()
+            for item in first(_HEAD_AUTHORS, head).split(",")
+            if item.strip()
+        ]
+
     return {
         "loader": loader,
         "name": first(_HEAD_DISPLAY, head) or first(_HEAD_MODID, head),
         "id": first(_HEAD_MODID, head) or first(_TOML_MODID, head),
         "version": first(_HEAD_VERSION, head) or first(_TOML_VERSION, head),
         "description": first(_HEAD_DESC, head) or first(_TOML_DESC, head),
-        "authors": [],
+        "authors": authors,
         "depends": depends,
     }
 

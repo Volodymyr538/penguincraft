@@ -48,6 +48,22 @@ modId="optional-one"
 mandatory=false
 """
 
+FORGE_TOML_TABLE = """
+modLoader="javafml"
+
+[[mods]]
+modId="coolmod"
+displayName="Cool Mod"
+version="2.1"
+description="Cool"
+authors=["Alice", "Bob"]
+
+[[dependencies.coolmod]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20,1.21)"
+"""
+
 MCMOD = [
     {
         "modid": "oldmod",
@@ -130,6 +146,20 @@ class ParseMetadataTests(unittest.TestCase):
         self.assertIn("forge", meta["depends"])
         self.assertIn("minecraft", meta["depends"])
         self.assertNotIn("optional-one", meta["depends"])
+
+    def test_forge_toml_array_of_tables(self) -> None:
+        with TemporaryDirectory() as tmp:
+            jar = make_jar(
+                Path(tmp) / "cool.jar",
+                [("META-INF/mods.toml", FORGE_TOML_TABLE)],
+            )
+            meta = mod_manager.parse_mod_metadata(jar)
+            self.assertEqual(meta["id"], "coolmod")
+            self.assertEqual(meta["name"], "Cool Mod")
+            self.assertEqual(meta["authors"], ["Alice", "Bob"])
+            # Диапазон версий разбирается только через tomllib, поэтому
+            # проверяем лишь наличие зависимости.
+            self.assertIn("minecraft", meta["depends"])
 
     def test_mcmod_info(self) -> None:
         with TemporaryDirectory() as tmp:
