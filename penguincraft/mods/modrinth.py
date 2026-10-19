@@ -18,16 +18,6 @@ from ..core.task import Reporter
 
 BASE_URL = "https://api.modrinth.com/v2"
 
-#: Человеко-читаемые названия типов проектов.
-PROJECT_TYPES = {
-    "mod": "Мод",
-    "modpack": "Модпак",
-    "resourcepack": "Ресурспак",
-    "shader": "Шейдер",
-    "datapack": "Датапак",
-    "plugin": "Плагин",
-}
-
 #: Загрузчики Modrinth, совместимые с нашими.
 KNOWN_LOADERS = ("fabric", "quilt", "forge", "neoforge", "liteloader", "modloader", "risugami")
 
@@ -358,20 +348,6 @@ class Modrinth:
 # ---------------------------------------------------------------------------
 # Вспомогательные преобразования
 # ---------------------------------------------------------------------------
-
-
-def loader_for_modrinth(value: str) -> str:
-    """Приводит название загрузчика к нашему id."""
-    value = (value or "").lower()
-    if value in ("neoforge", "neo"):
-        return "neoforge"
-    if value.startswith("forge"):
-        return "forge"
-    if value.startswith("quilt"):
-        return "quilt"
-    if value.startswith("fabric"):
-        return "fabric"
-    return "vanilla"
 
 
 def format_downloads(count: int) -> str:

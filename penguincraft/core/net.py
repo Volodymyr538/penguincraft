@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import gzip
-import io
 import json
 import os
 import socket
@@ -27,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 from .. import USER_AGENT
-from .task import Cancelled, Reporter
+from .task import Reporter
 
 DEFAULT_TIMEOUT = 30.0
 DOWNLOAD_TIMEOUT = 60.0
@@ -316,11 +315,3 @@ def urljoin(base: str, *parts: str) -> str:
 
 def quote(value: str) -> str:
     return urllib.parse.quote(value)
-
-
-def is_cancelled(error: BaseException) -> bool:
-    return isinstance(error, Cancelled)
-
-
-def default_http(**kwargs: Any) -> Http:
-    return Http(**kwargs)

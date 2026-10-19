@@ -17,7 +17,6 @@ from .installer import InstallPlan
 from .paths import Paths
 from .rules import default_platform, resolve_arguments, substitute_all
 from .settings import InstanceConfig, Settings
-from .task import Reporter
 
 
 class LaunchError(Exception):
@@ -377,17 +376,3 @@ def spawn(command: LaunchCommand) -> GameProcess:
     except OSError as error:
         raise LaunchError(f"Не удалось запустить игру: {error}") from error
     return GameProcess(process, command)
-
-
-def dry_run_report(command: LaunchCommand) -> str:
-    """Человекочитаемое описание команды (для страницы «Консоль»)."""
-    lines = [
-        f"Java:   {command.argv[0]}",
-        f"Рабочий каталог: {command.cwd}",
-        f"Версия: {command.plan.version_id}",
-        f"Память: {command.variables.get('memory', '')}",
-        "",
-        "Команда:",
-        command.pretty,
-    ]
-    return "\n".join(lines)

@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
-from ..core.mojang import VersionRepository
 from ..core.net import Http
 from ..core.paths import Paths
 from ..core.settings import Settings
 from ..core.task import Reporter
-from .base import Loader, LoaderError, LoaderVersion, _version_tuple
+from .base import Loader, LoaderError, LoaderVersion
 
 
 class FabricLikeLoader(Loader):

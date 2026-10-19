@@ -8,16 +8,15 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 import time
-from dataclasses import dataclass
+import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from .paths import Paths
 from .settings import InstanceConfig, Settings
-from .util import copy_tree, remove_tree, sanitize_name
+from .util import copy_tree, extract_zip, remove_tree, sanitize_name
 
 #: Каталоги, которые создаются в каждом экземпляре.
 STANDARD_DIRS = (
@@ -30,6 +29,18 @@ STANDARD_DIRS = (
     "logs",
     "crash-reports",
 )
+
+#: Куда класть проекты Modrinth внутри экземпляра.
+PROJECT_DIRS: Dict[str, str] = {
+    "mod": "mods",
+    "modpack": "mods",
+    "resourcepack": "resourcepacks",
+    "shader": "shaderpacks",
+    "datapack": "datapacks",
+}
+
+#: Каталоги игры, которые не попадают в экспорт экземпляра.
+EXPORT_EXCLUDE = ("logs", "crash-reports")
 
 
 class InstanceError(Exception):
@@ -195,8 +206,26 @@ class InstanceManager:
     def shaderpacks_dir(self, name: str) -> Path:
         return self.paths.instance_game_dir(name) / "shaderpacks"
 
+    def datapacks_dir(self, name: str) -> Path:
+        return self.paths.instance_game_dir(name) / "datapacks"
+
     def saves_dir(self, name: str) -> Path:
         return self.paths.instance_game_dir(name) / "saves"
+
+    def project_dir(self, name: str, project_type: str) -> Path:
+        """Каталог для проекта Modrinth нужного типа (мод, шейдер и т.д.)."""
+        kind = (project_type or "mod").lower().rstrip("s")
+        folder = PROJECT_DIRS.get(kind, "mods")
+        directory = self.paths.instance_game_dir(name) / folder
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def worlds(self, name: str) -> List[str]:
+        """Названия миров экземпляра."""
+        directory = self.saves_dir(name)
+        if not directory.is_dir():
+            return []
+        return sorted(entry.name for entry in directory.iterdir() if entry.is_dir())
 
     def ensure_layout(self, name: str) -> Path:
         game_dir = self.paths.instance_game_dir(name)
@@ -216,6 +245,120 @@ class InstanceManager:
             except OSError:
                 continue
         return total
+
+    # ------------------------------------------------------------------
+    # Экспорт, импорт и резервные копии
+    # ------------------------------------------------------------------
+    def export_archive(
+        self,
+        name: str,
+        target: Path | str,
+        *,
+        include_game: bool = True,
+        exclude: Iterable[str] = EXPORT_EXCLUDE,
+        reporter=None,
+    ) -> Path:
+        """Складывает экземпляр в zip-архив (``instance.json`` + ``game/``)."""
+        directory = self.paths.instance_dir(name)
+        if not directory.is_dir():
+            raise InstanceError(f"Экземпляр «{name}» не найден")
+        target = Path(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        excluded = tuple(exclude)
+        tmp = target.with_name(target.name + ".part")
+        count = 0
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as archive:
+            config_path = self.paths.instance_json(name)
+            if config_path.is_file():
+                archive.write(config_path, "instance.json")
+            if include_game:
+                game = self.paths.instance_game_dir(name)
+                if game.is_dir():
+                    for path in sorted(game.rglob("*")):
+                        if not path.is_file() or path.is_symlink():
+                            continue
+                        relative = path.relative_to(game)
+                        if relative.parts and relative.parts[0] in excluded:
+                            continue
+                        archive.write(path, f"game/{relative.as_posix()}")
+                        count += 1
+                        if reporter and count % 50 == 0:
+                            reporter.status(f"Экспорт: {count} файлов…")
+                            reporter.check_cancel()
+        tmp.replace(target)
+        if reporter:
+            reporter.log(f"Экспортировано файлов: {count}")
+        return target
+
+    def import_archive(
+        self,
+        archive_path: Path | str,
+        *,
+        display_name: str = "",
+        reporter=None,
+    ) -> InstanceConfig:
+        """Создаёт новый экземпляр из архива, сделанного :meth:`export_archive`."""
+        archive_path = Path(archive_path)
+        if not archive_path.is_file():
+            raise InstanceError(f"Архив не найден: {archive_path}")
+        staging = self.paths.cache / "import" / f"{int(time.time())}-{sanitize_name(archive_path.stem)}"
+        remove_tree(staging)
+        try:
+            if reporter:
+                reporter.status("Распаковка архива…")
+            extract_zip(archive_path, staging)
+            config_path = staging / "instance.json"
+            if not config_path.is_file():
+                raise InstanceError(
+                    "В архиве нет instance.json — это не экземпляр PenguinCraft."
+                )
+            source = InstanceConfig.load(config_path)
+            wanted = display_name.strip() or source.display_name or archive_path.stem
+            name = self.unique_name(wanted)
+            target_dir = self.paths.instance_dir(name)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            game_source = staging / "game"
+            if game_source.is_dir():
+                copy_tree(game_source, target_dir / "game")
+            source.name = name
+            source.display_name = wanted
+            source.created_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+            source.last_played = ""
+            self.save(source)
+            self.ensure_layout(name)
+            return source
+        finally:
+            remove_tree(staging)
+
+    def backup_worlds(
+        self,
+        name: str,
+        target: Path | str,
+        *,
+        reporter=None,
+    ) -> Path:
+        """Сохраняет каталог ``saves`` экземпляра в zip-архив."""
+        saves = self.saves_dir(name)
+        if not saves.is_dir() or not any(saves.iterdir()):
+            raise InstanceError("В экземпляре нет миров для резервной копии")
+        target = Path(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".part")
+        count = 0
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(saves.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                relative = path.relative_to(saves)
+                archive.write(path, (Path("saves") / relative).as_posix())
+                count += 1
+                if reporter and count % 50 == 0:
+                    reporter.status(f"Копирование миров: {count} файлов…")
+                    reporter.check_cancel()
+        tmp.replace(target)
+        if reporter:
+            reporter.log(f"Миров сохранено: {count} файлов")
+        return target
 
     # ------------------------------------------------------------------
     def ensure_default(self) -> InstanceConfig:

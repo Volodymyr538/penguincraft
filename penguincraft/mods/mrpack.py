@@ -14,12 +14,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from ..core.instances import InstanceManager, InstanceError
+from ..core.instances import InstanceManager
 from ..core.net import Http
 from ..core.paths import Paths
 from ..core.settings import InstanceConfig, Settings
 from ..core.task import Cancelled, ProgressAggregator, Reporter
-from ..core.util import extract_zip, remove_tree
 from ..loaders import get_loader
 
 INDEX_NAME = "modrinth.index.json"
@@ -157,6 +156,7 @@ def install_modpack(
     instance = instance_manager.create(
         name,
         version_id="",
+        game_version=index.minecraft,
         loader=index.loader or "vanilla",
         loader_version=index.loader_version,
         icon=icon,
@@ -199,6 +199,73 @@ def install_modpack(
             f"Модпак «{index.name}» установлен: {len(index.client_files)} файлов"
         )
     return instance, index
+
+
+def update_modpack(
+    paths: Paths,
+    settings: Settings,
+    instance_manager: InstanceManager,
+    http: Http,
+    instance: InstanceConfig,
+    archive: Path | str,
+    *,
+    old_files: Iterable[str] = (),
+    reporter: Optional[Reporter] = None,
+    install_loader: bool = True,
+) -> ModpackIndex:
+    """Обновляет существующий экземпляр новым ``.mrpack`` того же модпака.
+
+    Файлы новой версии кладутся поверх старых, а те, что исчезли из
+    модпака, удаляются — иначе в каталоге оставался бы «мусор».
+    """
+    archive = Path(archive)
+    index = read_index(archive)
+    if not index.minecraft:
+        raise ModpackError("В модпаке не указана версия Minecraft")
+
+    if install_loader:
+        loader = get_loader(index.loader or instance.loader)
+        child = reporter.child(start=0.0, span=0.45) if reporter else None
+        version_id = loader.install(
+            paths,
+            settings,
+            http,
+            index.minecraft,
+            index.loader_version,
+            reporter=child or reporter,
+        )
+        instance.version_id = version_id
+    if index.loader:
+        instance.loader = index.loader
+    if index.loader_version:
+        instance.loader_version = index.loader_version
+    instance.game_version = index.minecraft
+    instance_manager.save(instance)
+
+    child = reporter.child(start=0.45, span=0.5) if reporter else None
+    _download_files(paths, http, instance_manager, instance, index, reporter=child)
+
+    child = reporter.child(start=0.95, span=0.05) if reporter else None
+    applied = _apply_overrides(archive, instance_manager.game_dir(instance.name), reporter=child)
+
+    # Убираем файлы, которые были в прошлой версии, но исчезли в новой.
+    # Файлы из overrides новой версии тоже считаются «новыми».
+    new_paths = {item.path for item in index.client_files} | applied
+    game_dir = instance_manager.game_dir(instance.name)
+    removed = 0
+    for relative in old_files:
+        if not relative or relative in new_paths:
+            continue
+        target = game_dir / relative
+        if target.is_file():
+            try:
+                target.unlink()
+                removed += 1
+            except OSError:
+                continue
+    if reporter and removed:
+        reporter.log(f"Удалено устаревших файлов: {removed}")
+    return index
 
 
 def _download_files(
@@ -273,8 +340,13 @@ def _apply_overrides(
     game_dir: Path,
     *,
     reporter: Optional[Reporter] = None,
-) -> None:
-    """Копирует overrides/ и client-overrides/ в каталог игры."""
+) -> set[str]:
+    """Копирует overrides/ и client-overrides/ в каталог игры.
+
+    Возвращает набор относительных путей, которые были записаны: он нужен,
+    чтобы при обновлении модпака не удалить файлы, пришедшие из overrides.
+    """
+    applied: set[str] = set()
     prefix = "client-overrides/"
     with zipfile.ZipFile(archive) as zf:
         for name in zf.namelist():
@@ -294,8 +366,10 @@ def _apply_overrides(
             destination.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(name) as source, open(destination, "wb") as out:
                 shutil.copyfileobj(source, out)
+            applied.add(Path(relative).as_posix())
     if reporter:
         reporter.status("Файлы модпака распакованы")
+    return applied
 
 
 def detect_modpack_kind(archive: Path | str) -> str:

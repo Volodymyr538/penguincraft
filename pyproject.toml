@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguincraft"
-version = "1.0.0"
+version = "1.1.0"
 description = "Лёгкий лаунчер Minecraft для Linux и ChromeOS (только стандартная библиотека Python)"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -33,9 +33,6 @@ gui = []
 
 [project.scripts]
 penguincraft = "penguincraft.cli:main"
-
-[project.gui-scripts]
-penguincraft-gui = "penguincraft.cli:main"
 
 [tool.setuptools]
 packages = [

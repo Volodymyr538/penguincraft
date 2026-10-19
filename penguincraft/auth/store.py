@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-from .account import Account, AccountType
+from .account import Account
 
 
 class AccountStore:

@@ -120,6 +120,10 @@ class Paths:
     def instance_json(self, name: str) -> Path:
         return self.instance_dir(name) / "instance.json"
 
+    def instance_index(self, name: str) -> Path:
+        """Индекс установленных с Modrinth проектов (для проверки обновлений)."""
+        return self.instance_dir(name) / "installed.json"
+
     def version_json(self, version_id: str) -> Path:
         return self.versions / version_id / f"{version_id}.json"
 

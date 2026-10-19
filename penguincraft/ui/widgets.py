@@ -129,46 +129,6 @@ class Card(ttk.Frame):
 
 
 # ---------------------------------------------------------------------------
-# Форма «подпись → поле»
-# ---------------------------------------------------------------------------
-
-
-class Form(ttk.Frame):
-    """Сетка из подписей и полей."""
-
-    def __init__(self, master, theme: Theme, *, label_width: int = 26, style: str = "Card.TFrame"):
-        super().__init__(master, style=style)
-        self.theme = theme
-        self.label_width = label_width
-        self._row = 0
-        self.columnconfigure(1, weight=1)
-
-    def add(self, label: str, widget: tk.Widget, hint: str = "") -> tk.Widget:
-        frame = ttk.Frame(self, style="Card.TFrame")
-        frame.grid(row=self._row, column=0, sticky="nw", padx=(0, 12), pady=5)
-        ttk.Label(frame, text=label, style="CardMuted.TLabel", width=self.label_width, anchor="w").pack(anchor="w")
-        widget.grid(row=self._row, column=1, sticky="ew", pady=5)
-        self._row += 1
-        if hint:
-            ttk.Label(self, text=hint, style="CardMuted.TLabel", wraplength=520, justify="left").grid(
-                row=self._row, column=1, sticky="w", pady=(0, 6)
-            )
-            self._row += 1
-        return widget
-
-    def add_row(self, widget: tk.Widget) -> tk.Widget:
-        widget.grid(row=self._row, column=0, columnspan=2, sticky="ew", pady=5)
-        self._row += 1
-        return widget
-
-    def separator(self) -> None:
-        ttk.Separator(self, orient="horizontal").grid(
-            row=self._row, column=0, columnspan=2, sticky="ew", pady=8
-        )
-        self._row += 1
-
-
-# ---------------------------------------------------------------------------
 # Таблица
 # ---------------------------------------------------------------------------
 
@@ -192,7 +152,12 @@ class Table(ttk.Frame):
         self.theme = theme
         self._on_select = on_select
         self._on_activate = on_activate
+        self._icon_width = icon_width
         keys = [item[0] for item in columns]
+        self._columns = list(keys)
+        self._titles = {item[0]: item[1] for item in columns}
+        self._sort_key = ""
+        self._sort_descending = False
         # Картинки в ttk.Treeview рисуются только в колонке дерева (#0),
         # поэтому для списков с иконками её показываем узкой колонкой.
         # Tk резервирует слева ~18 px под «раскрывашку», это учтено в
@@ -204,7 +169,9 @@ class Table(ttk.Frame):
             self.tree.column("#0", width=icon_width, minwidth=icon_width, stretch=False, anchor="center")
         for key, title, width, *rest in columns:
             anchor = rest[0] if rest else "w"
-            self.tree.heading(key, text=title, anchor=anchor)
+            # Клик по заголовку сортирует столбец (сначала по возрастанию,
+            # повторный клик — по убыванию).
+            self.tree.heading(key, text=title, anchor=anchor, command=lambda k=key: self._sort_by(k))
             self.tree.column(key, width=width, anchor=anchor, stretch=(key == keys[-1]))
         scroll = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -213,6 +180,38 @@ class Table(ttk.Frame):
         self.tree.tag_configure("alt", background=theme.colors["tree_alt"])
         self.tree.bind("<<TreeviewSelect>>", self._selected)
         self.tree.bind("<Double-1>", self._activated)
+
+    # ------------------------------------------------------------------
+    def _sort_by(self, key: str) -> None:
+        descending = self._sort_key == key and not self._sort_descending
+        self._sort_key = key
+        self._sort_descending = descending
+        self._sort(key, descending)
+        self._refresh_headings()
+
+    def _refresh_headings(self) -> None:
+        for key, title in self._titles.items():
+            self.tree.heading(key, text=f"{title}{self._sort_arrow(key)}")
+
+    def _sort(self, key: str, descending: bool) -> None:
+        children = list(self.tree.get_children(""))
+
+        def value(iid: str):
+            text = str(self.tree.set(iid, key)).strip()
+            normalised = text.replace("\u00a0", "").replace(" ", "").replace(",", ".")
+            try:
+                return (0, float(normalised))
+            except ValueError:
+                return (1, text.lower())
+
+        children.sort(key=value, reverse=descending)
+        for index, iid in enumerate(children):
+            self.tree.move(iid, "", index)
+
+    def _sort_arrow(self, key: str) -> str:
+        if key != self._sort_key:
+            return ""
+        return " ▼" if self._sort_descending else " ▲"
 
     # ------------------------------------------------------------------
     def _selected(self, _event=None) -> None:

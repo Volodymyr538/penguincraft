@@ -7,7 +7,6 @@ import tkinter as tk
 from tkinter import ttk
 from typing import List
 
-from ...core.util import human_size
 from ..widgets import Card, Table, ask_yes_no, show_info
 from .base import BaseView
 from .instances import CreateInstanceDialog, LOADER_CHOICES

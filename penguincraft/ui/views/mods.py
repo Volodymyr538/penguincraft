@@ -16,13 +16,14 @@ from .base import BaseView
 
 class ModsView(BaseView):
     title = "Моды"
-    subtitle = "Установка модов с Modrinth и работа с папкой mods"
+    subtitle = "Моды, ресурспаки и шейдеры: поиск в Modrinth и работа с каталогами"
 
     def build(self) -> None:
         page = self.page()
         self._instances: List = []
         self._hits: Dict[str, object] = {}
         self._mods: Dict[str, object] = {}
+        self._updates: Dict[str, object] = {}
 
         # --- выбор экземпляра --------------------------------------------
         top = ttk.Frame(page, style="TFrame")
@@ -33,7 +34,7 @@ class ModsView(BaseView):
         self.instance_var.bind("<<ComboboxSelected>>", lambda _e: self._instance_changed())
         self.instance_info = ttk.Label(top, text="", style="Muted.TLabel")
         self.instance_info.pack(side="left")
-        ttk.Button(top, text="Открыть папку mods", style="Ghost.TButton", command=self._open_mods_dir).pack(side="right")
+        ttk.Button(top, text="Открыть папку", style="Ghost.TButton", command=self._open_target_dir).pack(side="right")
 
         notebook = ttk.Notebook(page)
         notebook.pack(fill="both", expand=True)
@@ -80,17 +81,26 @@ class ModsView(BaseView):
 
         # --- вкладка локальных модов -------------------------------------
         local_tab = ttk.Frame(notebook, style="TFrame", padding=12)
-        notebook.add(local_tab, text="Установленные моды")
+        notebook.add(local_tab, text="Установленные")
+
+        filter_bar = ttk.Frame(local_tab, style="TFrame")
+        filter_bar.pack(fill="x", pady=(0, 10))
+        ttk.Label(filter_bar, text="Фильтр:", style="Muted.TLabel").pack(side="left")
+        self.filter_var = tk.StringVar()
+        self.filter_var.trace_add("write", lambda *_args: self._refresh_local())
+        ttk.Entry(filter_bar, textvariable=self.filter_var).pack(side="left", fill="x", expand=True, padx=(8, 0))
+        ttk.Button(filter_bar, text="Найти дубликаты", style="Ghost.TButton", command=self._find_duplicates).pack(side="left", padx=(8, 0))
 
         self.local_table = Table(
             local_tab,
             self.theme,
             [
-                ("title", "Название", 240),
-                ("version", "Версия", 110),
-                ("loader", "Загрузчик", 110),
-                ("state", "Состояние", 110),
-                ("file", "Файл", 320),
+                ("title", "Название", 230),
+                ("version", "Версия", 100),
+                ("loader", "Загрузчик", 100),
+                ("state", "Состояние", 100),
+                ("update", "Обновление", 120),
+                ("file", "Файл", 280),
             ],
             height=14,
             on_select=lambda _i: None,
@@ -103,6 +113,8 @@ class ModsView(BaseView):
         ttk.Button(local_actions, text="Включить / выключить", command=self._toggle_mod).pack(side="left")
         ttk.Button(local_actions, text="Удалить", style="Danger.TButton", command=self._delete_mod).pack(side="left", padx=(8, 0))
         ttk.Button(local_actions, text="Импорт из файла…", command=self._import_files).pack(side="left", padx=(8, 0))
+        ttk.Button(local_actions, text="Проверить обновления", command=self._check_updates).pack(side="left", padx=(8, 0))
+        ttk.Button(local_actions, text="Обновить выбранный", style="Accent.TButton", command=self._update_selected).pack(side="left", padx=(8, 0))
         ttk.Button(local_actions, text="Обновить", style="Ghost.TButton", command=self.reload).pack(side="right")
 
         self.local_status = ttk.Label(local_tab, text="", style="Muted.TLabel")
@@ -156,10 +168,25 @@ class ModsView(BaseView):
             self.local_status.configure(text="")
             return
         mods = self.manager.list_mods(instance)
+        try:
+            needle = self.filter_var.get().strip().lower()
+        except (AttributeError, tk.TclError):  # pragma: no cover
+            needle = ""
         total = 0
+        shown = 0
+        updates = 0
         for mod in mods:
             total += mod.size
+            if needle and needle not in f"{mod.title} {mod.mod_id} {mod.filename}".lower():
+                continue
+            shown += 1
             self._mods[mod.filename] = mod
+            pair = self._updates.get(self._base_name(mod.filename))
+            if pair is not None:
+                updates += 1
+                label = getattr(pair[1], "version_number", "") or "есть"
+            else:
+                label = "—"
             self.local_table.add(
                 mod.filename,
                 (
@@ -167,25 +194,48 @@ class ModsView(BaseView):
                     mod.version or "—",
                     mod.loader or "—",
                     "включён" if mod.enabled else "выключен",
+                    label,
                     mod.filename,
                 ),
             )
-        self.local_status.configure(text=f"Всего: {len(mods)} · {human_size(total)}")
+        text = f"Показано: {shown} из {len(mods)} · {human_size(total)}"
+        if updates:
+            text += f" · обновлений: {updates}"
+        self.local_status.configure(text=text)
 
-    def _open_mods_dir(self) -> None:
+    @staticmethod
+    def _base_name(filename: str) -> str:
+        from ...mods.manager import DISABLED_SUFFIX
+
+        if filename.endswith(DISABLED_SUFFIX):
+            return filename[: -len(DISABLED_SUFFIX)]
+        return filename
+
+    def _project_type(self) -> str:
+        return {"Моды": "mod", "Ресурспаки": "resourcepack", "Шейдеры": "shader"}.get(
+            self.type_combo.get(), "mod"
+        )
+
+    def _target_dir(self):
         instance = self._current_instance()
         if instance is None:
-            return
-        open_in_file_manager(self.manager.instances.mods_dir(instance.name))
+            return None
+        return self.manager.instances.project_dir(instance.name, self._project_type())
+
+    def _open_target_dir(self) -> None:
+        directory = self._target_dir()
+        if directory is not None:
+            open_in_file_manager(directory)
 
     # ------------------------------------------------------------------
     def _search(self) -> None:
         instance = self._current_instance()
         loader = instance.loader if instance and instance.loader != "vanilla" else ""
         game_version = (instance.game_version or instance.version_id) if instance else ""
-        project_type = {"Моды": "mod", "Ресурспаки": "resourcepack", "Шейдеры": "shader"}.get(
-            self.type_combo.get(), "mod"
-        )
+        project_type = self._project_type()
+        # Загрузчиков у ресурспаков и шейдеров нет, поэтому фильтр по
+        # загрузчику к ним не применяем — иначе поиск почти всегда пуст.
+        loaders = [loader] if (loader and project_type == "mod") else []
         query = self.query_var.get().strip()
         self.search_status.configure(text="Поиск…")
 
@@ -193,7 +243,7 @@ class ModsView(BaseView):
             result = self.manager.modrinth.search(
                 query,
                 project_type=project_type,
-                loaders=[loader] if loader else [],
+                loaders=loaders,
                 game_versions=[game_version] if game_version else [],
                 limit=40,
             )
@@ -248,14 +298,89 @@ class ModsView(BaseView):
         if hit is None:
             show_info(self.app, "Выберите проект в списке.")
             return
+        project_type = self._project_type()
 
         def work(reporter):
-            return self.manager.install_mod_from_modrinth(instance, hit.project_id, reporter=reporter)
+            return self.manager.install_project_from_modrinth(
+                instance, hit.project_id, project_type=project_type, reporter=reporter
+            )
 
         def done(path) -> None:
-            self.log(f"Установлен мод: {path.name}")
+            self.log(f"Установлено в {path.parent.name}: {path.name}")
+            self._refresh_local()
 
         self.run_task(f"Установка «{hit.title}»", work, on_done=done)
+
+    # ------------------------------------------------------------------
+    def _check_updates(self) -> None:
+        instance = self._current_instance()
+        if instance is None:
+            show_info(self.app, "Сначала создайте экземпляр.")
+            return
+        self.local_status.configure(text="Проверка обновлений…")
+
+        def work(reporter):
+            return self.manager.check_project_updates(instance)
+
+        def done(found) -> None:
+            self._updates = {
+                record.filename: (record, version) for record, version in found
+            }
+            self._refresh_local()
+            if found:
+                self.log(f"Доступно обновлений: {len(found)}")
+            else:
+                show_info(self.app, "Обновлений нет — все проекты актуальны.")
+
+        self.run_task("Проверка обновлений", work, on_done=done)
+
+    def _update_selected(self) -> None:
+        instance = self._current_instance()
+        filename = self.local_table.selected()
+        mod = self._mods.get(filename)
+        if instance is None or mod is None:
+            show_info(self.app, "Выберите мод в списке.")
+            return
+        pair = self._updates.get(self._base_name(mod.filename))
+        if pair is None:
+            show_info(
+                self.app,
+                "Для этого мода обновление не найдено.\n"
+                "Сначала нажмите «Проверить обновления».",
+            )
+            return
+        record = pair[0]
+
+        def work(reporter):
+            return self.manager.update_project(instance, record, reporter=reporter)
+
+        def done(path) -> None:
+            self._updates.pop(self._base_name(mod.filename), None)
+            self.log(f"Обновлён: {path.name}")
+            self._refresh_local()
+
+        self.run_task(f"Обновление «{mod.title}»", work, on_done=done)
+
+    def _find_duplicates(self) -> None:
+        instance = self._current_instance()
+        if instance is None:
+            show_info(self.app, "Сначала создайте экземпляр.")
+            return
+        groups = mod_manager.find_duplicates(
+            self.manager.instances.mods_dir(instance.name)
+        )
+        if not groups:
+            show_info(self.app, "Дубликатов не найдено.")
+            return
+        lines = []
+        for key, paths in sorted(groups.items()):
+            lines.append(f"{key}:")
+            lines.extend(f"  • {path.name}" for path in paths)
+        show_info(
+            self.app,
+            "Найдены возможные дубликаты (одинаковый mod id):\n\n" + "\n".join(lines),
+            "Дубликаты модов",
+        )
 
     # ------------------------------------------------------------------
     def _toggle_mod(self) -> None:
@@ -278,6 +403,7 @@ class ModsView(BaseView):
         if not ask_yes_no(self.app, f"Удалить мод «{mod.title}» ({mod.filename})?", "Удаление"):
             return
         mod_manager.delete_mod(mod)
+        self._updates.pop(self._base_name(mod.filename), None)
         self._refresh_local()
 
     def _import_files(self) -> None:

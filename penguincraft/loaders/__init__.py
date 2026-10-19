@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Tuple
+from typing import Dict, List, Mapping, Optional
 
 from ..core.paths import Paths
 from .base import Loader, LoaderError, LoaderVersion

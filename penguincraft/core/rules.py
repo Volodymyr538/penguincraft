@@ -170,7 +170,3 @@ def substitute(value: str, variables: Mapping[str, Any]) -> str:
 
 def substitute_all(values: Iterable[str], variables: Mapping[str, Any]) -> List[str]:
     return [substitute(item, variables) for item in values]
-
-
-def collect_placeholders(value: str) -> List[str]:
-    return _PLACEHOLDER_RE.findall(value)

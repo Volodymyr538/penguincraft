@@ -14,8 +14,7 @@ import json
 import re
 import time
 import xml.etree.ElementTree as ElementTree
-from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Dict, List, Optional
 
 from ..core.net import Http
 from ..core.paths import Paths
@@ -28,7 +27,6 @@ from .base import (
     detect_installed_version,
     prepare_for_installer,
     run_java_installer,
-    _version_tuple,
 )
 
 

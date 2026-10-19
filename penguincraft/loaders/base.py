@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional
+from typing import List, Mapping, Optional
 
 from ..core.java import ensure_java
 from ..core.mojang import VersionRepository, java_major_for
@@ -100,8 +100,6 @@ class Loader:
     # ------------------------------------------------------------------
     def installed_versions(self, paths: Paths) -> List[str]:
         """Версии, чьи описания уже лежат локально."""
-        from ..core import mojang
-
         repo = VersionRepository(paths)
         result = []
         for version_id in repo.list_local():

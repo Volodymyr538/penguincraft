@@ -106,10 +106,6 @@ class ConsoleReporter:
         self.stream.flush()
 
 
-def make_reporter(verbose: bool = False) -> Reporter:
-    return Reporter(ConsoleReporter(verbose))
-
-
 # ---------------------------------------------------------------------------
 # Команды
 # ---------------------------------------------------------------------------

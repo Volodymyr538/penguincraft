@@ -5,7 +5,7 @@ from __future__ import annotations
 from tkinter import ttk
 from typing import List
 
-from ...core.util import cpu_count, human_size, is_chromebook, total_memory_mb
+from ...core.util import cpu_count, human_size, total_memory_mb
 from ..widgets import Card, ScrollFrame, StatTile, Table, show_info
 from .base import BaseView
 

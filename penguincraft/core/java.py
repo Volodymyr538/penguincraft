@@ -12,7 +12,7 @@ import os
 import re
 import subprocess
 import tarfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -470,7 +470,6 @@ _UNRECOGNIZED_RE = re.compile(
     r"(?:Unrecognized VM option|Unrecognized option|Improperly specified VM option)"
     r"\s*'?([^\s'\]\)]+)'?"
 )
-_IMPROPER_RE = re.compile(r"Improperly specified VM option\s*'([^']+)'")
 _CACHE_FILE = "jvm-args.json"
 
 

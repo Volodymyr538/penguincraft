@@ -7,28 +7,32 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import APP_NAME, APP_VERSION
-from .auth.account import Account, AccountType
+from .auth.account import Account
 from .auth.microsoft import MicrosoftAuth, MicrosoftAuthError
 from .auth.store import AccountStore
-from .auth.yggdrasil import AUTH_SERVERS, YggdrasilAuth, YggdrasilError, AuthServer, ELYBY
+from .auth.yggdrasil import YggdrasilAuth, YggdrasilError, AuthServer, ELYBY
 from .core.instances import GRAPHICS_PRESETS, InstanceManager
 from .core.installer import InstallError, InstallPlan, install_version
-from .core.java import JavaRuntime, ensure_java, find_installed_java
+from .core.java import JavaRuntime, find_installed_java
 from .core.launch import GameProcess, LaunchCommand, LaunchError, build_command, spawn
-from .core.mojang import VersionManifest, VersionRepository, java_major_for
+from .core.mojang import VersionManifest, VersionRepository
 from .core.net import Http
 from .core.paths import Paths
 from .core.session import SessionError, ensure_valid_account
-from .core.settings import InstanceConfig, JVM_PRESETS, Settings, auto_memory_mb
+from .core.settings import InstanceConfig, Settings, auto_memory_mb
 from .core.task import Cancelled, Reporter
 from .loaders import Loader, LoaderError, get_loader, loader_for_version, local_versions
-from .mods.modrinth import Modrinth, ModrinthError
-from .mods.mrpack import ModpackError, detect_modpack_kind, install_modpack, read_index
+from .mods.modrinth import Modrinth, ModVersion
+from .mods.mrpack import (
+    ModpackError,
+    detect_modpack_kind,
+    install_modpack,
+    update_modpack,
+)
+from .mods.index import InstalledIndex, InstalledProject
 from .mods import manager as mod_manager
 
 
@@ -326,33 +330,282 @@ class LauncherManager:
     def list_mods(self, instance: InstanceConfig):
         return mod_manager.list_mods(self.instances.mods_dir(instance.name))
 
-    def install_mod_from_modrinth(
+    def install_project_from_modrinth(
         self,
         instance: InstanceConfig,
         project_id: str,
         *,
+        project_type: str = "mod",
         version_id: str = "",
         reporter: Optional[Reporter] = None,
     ) -> Path:
-        """Ставит мод с Modrinth в каталог экземпляра."""
-        mods_dir = self.instances.mods_dir(instance.name)
-        mods_dir.mkdir(parents=True, exist_ok=True)
+        """Ставит проект Modrinth в нужный каталог экземпляра.
+
+        Моды идут в ``mods``, ресурспаки — в ``resourcepacks``,
+        шейдеры — в ``shaderpacks``.
+        """
+        kind = (project_type or "mod").lower()
+        target_dir = self.instances.project_dir(instance.name, kind)
+        loader = instance.loader if kind == "mod" else ""
         if version_id:
             version = self.modrinth.version(version_id)
         else:
             version = self.modrinth.best_version(
                 project_id,
+                loader=loader,
+                game_version=instance.game_version or instance.version_id,
+            )
+        if version is None:
+            raise LauncherError("Не найдена подходящая версия проекта")
+        file = version.primary_file
+        if file is None:
+            raise LauncherError("У версии проекта нет файлов для скачивания")
+        if reporter:
+            reporter.status(f"Загрузка {file.filename}…")
+        path = self.modrinth.download_file(file, target_dir, reporter=reporter)
+        try:
+            index = self._index(instance)
+            index.record(
+                path.name,
+                project_id=project_id,
+                version_id=version.id,
+                version_number=version.version_number,
+                title=version.name or path.name,
+                project_type=kind,
+            )
+            index.save()
+        except OSError:
+            pass
+        return path
+
+    # ------------------------------------------------------------------
+    # Индекс установленного и обновления
+    # ------------------------------------------------------------------
+    def _index(self, instance: InstanceConfig) -> InstalledIndex:
+        return InstalledIndex(self.paths.instance_index(instance.name)).load()
+
+    def installed_index(self, instance: InstanceConfig) -> InstalledIndex:
+        """Индекс установленных проектов с чисткой записей о пропавших файлах."""
+        index = self._index(instance)
+        suffix = mod_manager.DISABLED_SUFFIX
+        existing: List[str] = []
+        for kind in ("mod", "resourcepack", "shader"):
+            directory = self.instances.project_dir(instance.name, kind)
+            for entry in directory.iterdir():
+                if not entry.is_file():
+                    continue
+                existing.append(entry.name)
+                if entry.name.endswith(suffix):
+                    existing.append(entry.name[: -len(suffix)])
+        if index.prune(existing):
+            try:
+                index.save()
+            except OSError:
+                pass
+        return index
+
+    def check_project_updates(
+        self, instance: InstanceConfig
+    ) -> List[Tuple[InstalledProject, ModVersion]]:
+        """Ищет более свежие версии установленных проектов."""
+        index = self.installed_index(instance)
+        game_version = instance.game_version or instance.version_id
+        found: List[Tuple[InstalledProject, ModVersion]] = []
+        for record in index.items():
+            if not record.project_id:
+                continue
+            loader = instance.loader if record.project_type == "mod" else ""
+            latest = self.modrinth.best_version(
+                record.project_id, loader=loader, game_version=game_version
+            )
+            if latest is None or not latest.id:
+                continue
+            if latest.id != record.version_id:
+                found.append((record, latest))
+        return found
+
+    def update_project(
+        self,
+        instance: InstanceConfig,
+        record: InstalledProject,
+        *,
+        version: Optional[ModVersion] = None,
+        reporter: Optional[Reporter] = None,
+    ) -> Path:
+        """Обновляет один установленный проект до свежей версии."""
+        loader = instance.loader if record.project_type == "mod" else ""
+        if version is None:
+            version = self.modrinth.best_version(
+                record.project_id,
+                loader=loader,
+                game_version=instance.game_version or instance.version_id,
+            )
+        if version is None:
+            raise LauncherError(
+                f"Не найдена новая версия «{record.title or record.filename}»"
+            )
+        file = version.primary_file
+        if file is None:
+            raise LauncherError("У новой версии нет файлов для скачивания")
+        target_dir = self.instances.project_dir(instance.name, record.project_type)
+        suffix = mod_manager.DISABLED_SUFFIX
+        old = target_dir / record.filename
+        disabled = False
+        if not old.is_file() and not record.filename.endswith(suffix):
+            candidate = target_dir / (record.filename + suffix)
+            if candidate.is_file():
+                old = candidate
+                disabled = True
+        if reporter:
+            reporter.status(f"Обновление {file.filename}…")
+        path = self.modrinth.download_file(file, target_dir, reporter=reporter)
+        if old.is_file() and old != path:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        if disabled and not path.name.endswith(suffix):
+            target = path.with_name(path.name + suffix)
+            try:
+                path.rename(target)
+                path = target
+            except OSError:
+                pass
+        base_name = path.name[: -len(suffix)] if path.name.endswith(suffix) else path.name
+        try:
+            index = self._index(instance)
+            index.forget([record.filename])
+            index.record(
+                base_name,
+                project_id=record.project_id,
+                version_id=version.id,
+                version_number=version.version_number,
+                title=version.name or base_name,
+                project_type=record.project_type,
+            )
+            index.save()
+        except OSError:
+            pass
+        return path
+
+    # ------------------------------------------------------------------
+    # Модпаки
+    # ------------------------------------------------------------------
+    def record_modpack_source(
+        self,
+        instance: InstanceConfig,
+        *,
+        project_id: str = "",
+        version_id: str = "",
+        version_number: str = "",
+        title: str = "",
+        slug: str = "",
+        files: Optional[List[str]] = None,
+    ) -> None:
+        """Запоминает, из какого проекта Modrinth поставлен модпак."""
+        try:
+            index = self._index(instance)
+            index.set_pack(
+                project_id=project_id,
+                version_id=version_id,
+                version_number=version_number,
+                title=title or instance.display_name,
+                project_slug=slug,
+                files=list(files or []),
+            )
+            index.save()
+        except OSError:
+            pass
+
+    def check_modpack_update(
+        self, instance: InstanceConfig
+    ) -> Optional[Tuple[InstalledProject, ModVersion]]:
+        """Есть ли более свежая версия у модпака, из которого сделан экземпляр."""
+        record = self._index(instance).pack
+        if record is None or not record.project_id:
+            return None
+        latest = self.modrinth.best_version(
+            record.project_id,
+            loader=instance.loader,
+            game_version=instance.game_version or instance.version_id,
+        )
+        if latest is None or not latest.id or latest.id == record.version_id:
+            return None
+        return record, latest
+
+    def update_modpack(
+        self,
+        instance: InstanceConfig,
+        *,
+        version_id: str = "",
+        reporter: Optional[Reporter] = None,
+    ) -> Tuple[InstanceConfig, Any]:
+        """Обновляет экземпляр новым ``.mrpack`` того же модпака (на месте)."""
+        record = self._index(instance).pack
+        if record is None or not record.project_id:
+            raise LauncherError(
+                "Источник модпака не записан — обновление невозможно. "
+                "Экземпляр создан из файла или старой версией лаунчера."
+            )
+        if version_id:
+            version = self.modrinth.version(version_id)
+        else:
+            version = self.modrinth.best_version(
+                record.project_id,
                 loader=instance.loader,
                 game_version=instance.game_version or instance.version_id,
             )
         if version is None:
-            raise LauncherError("Не найдена подходящая версия мода")
+            raise LauncherError("Не найдена новая версия модпака")
         file = version.primary_file
         if file is None:
-            raise LauncherError("У версии мода нет файлов для скачивания")
+            raise LauncherError("У версии модпака нет файла для скачивания")
+        self.paths.downloads.mkdir(parents=True, exist_ok=True)
+        target = self.paths.downloads / file.filename
         if reporter:
-            reporter.status(f"Загрузка {file.filename}…")
-        return self.modrinth.download_file(file, mods_dir, reporter=reporter)
+            reporter.status(f"Загрузка модпака {file.filename}…")
+        self.modrinth.download_file(file, target, reporter=reporter)
+        pack_index = update_modpack(
+            self.paths,
+            self.settings,
+            self.instances,
+            self.http,
+            instance,
+            target,
+            old_files=record.files,
+            reporter=reporter,
+        )
+        self.record_modpack_source(
+            instance,
+            project_id=record.project_id,
+            version_id=version.id,
+            version_number=version.version_number,
+            title=version.name or record.title,
+            slug=record.project_slug,
+            files=[item.path for item in pack_index.client_files],
+        )
+        return instance, pack_index
+
+    # ------------------------------------------------------------------
+    # Экспорт, импорт и резервные копии
+    # ------------------------------------------------------------------
+    def export_instance(
+        self, instance: InstanceConfig, target: Path | str, *, reporter: Optional[Reporter] = None
+    ) -> Path:
+        return self.instances.export_archive(instance.name, target, reporter=reporter)
+
+    def import_instance(
+        self, archive: Path | str, *, display_name: str = "", reporter: Optional[Reporter] = None
+    ) -> InstanceConfig:
+        return self.instances.import_archive(archive, display_name=display_name, reporter=reporter)
+
+    def backup_worlds(
+        self, instance: InstanceConfig, target: Path | str, *, reporter: Optional[Reporter] = None
+    ) -> Path:
+        return self.instances.backup_worlds(instance.name, target, reporter=reporter)
+
+    def instance_worlds(self, instance: InstanceConfig) -> List[str]:
+        return self.instances.worlds(instance.name)
 
     def install_modpack_file(
         self,
@@ -412,9 +665,18 @@ class LauncherManager:
         if reporter:
             reporter.status(f"Загрузка модпака {file.filename}…")
         self.modrinth.download_file(file, target, reporter=reporter)
-        return self.install_modpack_file(
+        instance, pack_index = self.install_modpack_file(
             target, display_name=version.name or file.filename, reporter=reporter
         )
+        self.record_modpack_source(
+            instance,
+            project_id=project_id,
+            version_id=version.id,
+            version_number=version.version_number,
+            title=version.name or file.filename,
+            files=[item.path for item in pack_index.client_files],
+        )
+        return instance, pack_index
 
     # ------------------------------------------------------------------
     # Прочее

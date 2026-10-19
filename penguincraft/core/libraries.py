@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from .net import Http, urljoin
+from .net import Http
 from .paths import Paths
 from .rules import default_platform, rules_allow
 from .task import ProgressAggregator, Reporter

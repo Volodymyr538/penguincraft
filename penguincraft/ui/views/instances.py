@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, ttk
 from typing import List, Optional
 
 from ...core.util import human_size
@@ -187,6 +187,8 @@ class InstancesView(BaseView):
         ttk.Button(toolbar, text="Копировать", command=self._clone).pack(side="left", padx=(8, 0))
         ttk.Button(toolbar, text="Переименовать", command=self._rename).pack(side="left", padx=(8, 0))
         ttk.Button(toolbar, text="Удалить", style="Danger.TButton", command=self._delete).pack(side="left", padx=(8, 0))
+        ttk.Button(toolbar, text="Экспорт…", command=self._export).pack(side="left", padx=(8, 0))
+        ttk.Button(toolbar, text="Импорт…", command=self._import).pack(side="left", padx=(8, 0))
         ttk.Button(toolbar, text="Обновить", style="Ghost.TButton", command=self.reload).pack(side="right")
 
         split = ttk.Frame(page, style="TFrame")
@@ -223,6 +225,8 @@ class InstancesView(BaseView):
         self.play_button.pack(fill="x")
         ttk.Button(actions, text="Установить / обновить", command=self._install).pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="Моды", command=self._open_mods).pack(fill="x", pady=(8, 0))
+        ttk.Button(actions, text="Проверить обновления", command=self._check_updates).pack(fill="x", pady=(8, 0))
+        ttk.Button(actions, text="Бэкап миров…", command=self._backup_worlds).pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="Открыть каталог", style="Ghost.TButton", command=self._open_dir).pack(fill="x", pady=(8, 0))
 
     # ------------------------------------------------------------------
@@ -351,6 +355,113 @@ class InstancesView(BaseView):
             f"Установка «{instance.display_name}»",
             lambda reporter: self.manager.install_instance(instance, reporter=reporter),
         )
+
+    # ------------------------------------------------------------------
+    def _export(self) -> None:
+        instance = self._current()
+        if instance is None:
+            show_info(self.app, "Выберите экземпляр.")
+            return
+        target = filedialog.asksaveasfilename(
+            parent=self.app,
+            title="Куда сохранить архив экземпляра",
+            defaultextension=".zip",
+            initialfile=f"{instance.name}.zip",
+            filetypes=[("Архив", "*.zip"), ("Все файлы", "*.*")],
+        )
+        if not target:
+            return
+        from pathlib import Path
+
+        if Path(target).exists() and not ask_yes_no(
+            self.app, f"Файл уже существует:\n{target}\n\nПерезаписать?", "Экспорт"
+        ):
+            return
+        self.run_task(
+            f"Экспорт «{instance.display_name}»",
+            lambda reporter: self.manager.export_instance(instance, target, reporter=reporter),
+            on_done=lambda path: self.app.log(f"Экспортировано в {path}"),
+        )
+
+    def _import(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self.app,
+            title="Выберите архив экземпляра",
+            filetypes=[("Архив", "*.zip"), ("Все файлы", "*.*")],
+        )
+        if not path:
+            return
+
+        def done(instance) -> None:
+            self.app.log(f"Импортирован экземпляр «{instance.display_name}»")
+            self.reload()
+            self.app.refresh_all()
+
+        self.run_task(
+            "Импорт экземпляра",
+            lambda reporter: self.manager.import_instance(path, reporter=reporter),
+            on_done=done,
+        )
+
+    def _backup_worlds(self) -> None:
+        instance = self._current()
+        if instance is None:
+            show_info(self.app, "Выберите экземпляр.")
+            return
+        worlds = self.manager.instance_worlds(instance)
+        if not worlds:
+            show_info(self.app, "В этом экземпляре нет миров для резервной копии.")
+            return
+        target = filedialog.asksaveasfilename(
+            parent=self.app,
+            title="Куда сохранить копию миров",
+            defaultextension=".zip",
+            initialfile=f"{instance.name}-saves.zip",
+            filetypes=[("Архив", "*.zip"), ("Все файлы", "*.*")],
+        )
+        if not target:
+            return
+        self.run_task(
+            f"Копия миров «{instance.display_name}»",
+            lambda reporter: self.manager.backup_worlds(instance, target, reporter=reporter),
+            on_done=lambda path: self.app.log(f"Миры сохранены в {path}"),
+        )
+
+    def _check_updates(self) -> None:
+        instance = self._current()
+        if instance is None:
+            show_info(self.app, "Выберите экземпляр.")
+            return
+
+        def work(reporter):
+            return (
+                self.manager.check_project_updates(instance),
+                self.manager.check_modpack_update(instance),
+            )
+
+        def done(result) -> None:
+            mods, pack = result
+            if not mods and pack is None:
+                show_info(self.app, "Обновлений нет — всё актуально.")
+                return
+            lines = []
+            if pack is not None:
+                record, version = pack
+                lines.append(f"Модпак «{record.title}» → {version.version_number or version.name}")
+            for record, version in mods:
+                title = record.title or record.filename
+                lines.append(f"• {title} → {version.version_number or version.name}")
+            summary = "Найдены обновления:\n\n" + "\n".join(lines)
+            if pack is not None and ask_yes_no(
+                self.app, summary + "\n\nОбновить модпак сейчас?", "Обновления"
+            ):
+                self.run_task(
+                    f"Обновление модпака «{instance.display_name}»",
+                    lambda reporter: self.manager.update_modpack(instance, reporter=reporter),
+                    on_done=lambda _res: self.app.refresh_all(),
+                )
+                return
+            show_info(self.app, summary, "Обновления")
 
     def _play(self) -> None:
         instance = self._current()

@@ -7,7 +7,7 @@ import json
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 class AccountType:
@@ -118,10 +118,3 @@ class Account:
             "user_properties": json.dumps({}),
             "clientid": self.client_token or "",
         }
-
-
-def account_from_json(text: str) -> Optional[Account]:
-    try:
-        return Account.from_dict(json.loads(text))
-    except (ValueError, TypeError):
-        return None

@@ -6,9 +6,8 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional
 
-from . import assets as assets_module
 from .assets import AssetResult, install_assets
 from .java import JavaRuntime, ensure_java
 from .libraries import install_libraries
@@ -17,8 +16,8 @@ from .net import Http
 from .paths import Paths
 from .rules import default_platform
 from .settings import Settings
-from .task import Cancelled, Reporter
-from .util import ensure_dir, hash_file
+from .task import Reporter
+from .util import hash_file
 
 
 class InstallError(Exception):
@@ -323,26 +322,3 @@ def install_version(
         java=runtime,
         logging_config=logging_config,
     )
-
-
-def is_installed(paths: Paths, version_id: str, version: Mapping[str, Any]) -> bool:
-    """Быстрая проверка: есть ли версия локально и цел ли клиент."""
-    jar = client_jar_path(paths, version_id, version)
-    return jar.is_file() and paths.version_json(version_id).is_file()
-
-
-def verify_installation(paths: Paths, plan: InstallPlan) -> List[str]:
-    """Возвращает список проблем (пустой список — всё хорошо)."""
-    problems: List[str] = []
-    if not plan.client_jar or not plan.client_jar.is_file():
-        problems.append("Не найден клиентский jar")
-    missing_libs = [entry for entry in plan.classpath if not entry.is_file()]
-    if missing_libs:
-        problems.append(f"Отсутствуют {len(missing_libs)} библиотек")
-    if plan.assets is not None:
-        index_id = plan.assets.index_id
-        if index_id and not (paths.asset_indexes / f"{index_id}.json").is_file():
-            problems.append("Нет индекса ресурсов")
-    if plan.java is None or not plan.java.path.is_file():
-        problems.append("Java не найдена")
-    return problems

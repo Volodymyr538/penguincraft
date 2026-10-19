@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import List, Mapping, Optional
 
 from ..core.mojang import VersionManifest, VersionRepository
@@ -10,7 +9,7 @@ from ..core.net import Http
 from ..core.paths import Paths
 from ..core.settings import Settings
 from ..core.task import Reporter
-from .base import Loader, LoaderError, LoaderVersion
+from .base import Loader, LoaderVersion
 
 
 class VanillaLoader(Loader):

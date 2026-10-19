@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 DISABLED_SUFFIX = ".disabled"
 
@@ -324,15 +323,3 @@ def find_duplicates(mods_dir: Path | str) -> Dict[str, List[Path]]:
             continue
         groups.setdefault(key.lower(), []).append(mod.path)
     return {key: value for key, value in groups.items() if len(value) > 1}
-
-
-def folder_summary(mods_dir: Path | str) -> Dict[str, Any]:
-    """Сводка по каталогу модов."""
-    mods = list_mods(mods_dir)
-    return {
-        "total": len(mods),
-        "enabled": sum(1 for item in mods if item.enabled),
-        "disabled": sum(1 for item in mods if not item.enabled),
-        "size": sum(item.size for item in mods),
-        "duplicates": find_duplicates(mods_dir),
-    }

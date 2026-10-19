@@ -17,10 +17,6 @@ class Cancelled(Exception):
     """Операция отменена пользователем."""
 
 
-class TaskFailure(Exception):
-    """Операция завершилась ошибкой, которую надо показать пользователю."""
-
-
 # ---------------------------------------------------------------------------
 # События
 # ---------------------------------------------------------------------------
@@ -215,14 +211,3 @@ class ProgressAggregator:
             self.total_bytes += extra
             total = self.total_bytes
         self.reporter.progress(self._done_bytes, total, self._base_status)
-
-
-# ---------------------------------------------------------------------------
-# Запуск в фоне
-# ---------------------------------------------------------------------------
-
-
-def run_in_thread(target: Callable[[], Any], name: str = "penguincraft-task") -> threading.Thread:
-    thread = threading.Thread(target=target, name=name, daemon=True)
-    thread.start()
-    return thread

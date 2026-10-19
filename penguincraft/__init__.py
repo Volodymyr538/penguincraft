@@ -11,7 +11,6 @@ __all__ = ["APP_NAME", "APP_VERSION", "APP_ID", "USER_AGENT"]
 
 APP_NAME = "PenguinCraft"
 APP_ID = "penguincraft"
-APP_VERSION = "1.0.0"
-APP_AUTHOR = "PenguinCraft"
+APP_VERSION = "1.1.0"
 
 USER_AGENT = f"{APP_NAME}/{APP_VERSION} (+https://github.com/Volodymyr538/penguincraft)"

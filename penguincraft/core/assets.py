@@ -205,26 +205,3 @@ def _materialize(
             except OSError:
                 continue
     return destination
-
-
-def assets_complete(paths: Paths, version: Mapping[str, Any]) -> bool:
-    """Грубая проверка: все ли ресурсы на месте."""
-    index_id = str((version.get("assetIndex") or {}).get("id") or "")
-    if not index_id:
-        return True
-    index = load_index(paths, index_id)
-    if index is None:
-        return False
-    objects = index.get("objects") or {}
-    checked = 0
-    for _, meta in objects.items():
-        if checked >= 400:  # не сканируем полторы тысячи файлов каждый раз
-            break
-        if not isinstance(meta, Mapping):
-            continue
-        object_hash = str(meta.get("hash") or "")
-        if object_hash:
-            checked += 1
-            if not _object_target(paths, object_hash).is_file():
-                return False
-    return True

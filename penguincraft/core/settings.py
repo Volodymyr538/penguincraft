@@ -7,12 +7,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .paths import Paths
-from .util import cpu_count, is_chromebook, total_memory_mb
+from .util import is_chromebook, total_memory_mb
 
 # ---------------------------------------------------------------------------
 # Профили JVM
@@ -167,11 +167,6 @@ def sanitize_jvm_args(
     return result
 
 
-def args_for_java(args: List[str], java_major: int) -> List[str]:
-    """Совместимый псевдоним :func:`sanitize_jvm_args`."""
-    return sanitize_jvm_args(args, java_major=java_major)
-
-
 def auto_memory_mb(preset: str = "balanced") -> int:
     """Подбирает объём heap под конкретную машину."""
     preset_data = JVM_PRESETS.get(preset, JVM_PRESETS["balanced"])
@@ -199,9 +194,7 @@ class Settings:
     """Пользовательские настройки лаунчера."""
 
     # -- интерфейс
-    theme: str = "dark"                      # dark | light | system
-    language: str = "ru"
-    ui_scale: float = 1.0
+    theme: str = "dark"                      # dark | light
     window_width: int = 1180
     window_height: int = 760
     sidebar_width: int = 208
@@ -213,8 +206,6 @@ class Settings:
     custom_jvm_args: str = ""
     memory_mode: str = "auto"                # auto | manual
     memory_mb: int = 2048
-    use_full_jvm_args: bool = False           # не добавлять аргументы версии
-    metamodel_wrap: bool = True
 
     # -- игра
     resolution_width: int = 854
@@ -231,15 +222,11 @@ class Settings:
     confirm_delete: bool = True
     parallel_downloads: int = 8
     proxy: str = ""
-    keep_launcher_profiles: bool = True
 
     # -- данные
     last_instance: str = "default"
     last_version: str = ""
     last_account: str = ""
-    elyby_enabled: bool = True
-    modrinth_filters_loader: str = ""
-    curseforge_api_key: str = ""
 
     # -- служебное
     schema: int = 1
@@ -278,10 +265,9 @@ class Settings:
             self.jvm_preset = "balanced"
         if self.memory_mode not in ("auto", "manual"):
             self.memory_mode = "auto"
-        if self.theme not in ("dark", "light", "system"):
+        if self.theme not in ("dark", "light"):
             self.theme = "dark"
         self.parallel_downloads = max(1, min(int(self.parallel_downloads or 8), 32))
-        self.ui_scale = max(0.75, min(float(self.ui_scale or 1.0), 2.0))
         self.window_width = max(880, min(int(self.window_width or 1180), 4096))
         self.window_height = max(560, min(int(self.window_height or 760), 2400))
         self.resolution_width = max(320, min(int(self.resolution_width or 854), 7680))
@@ -386,8 +372,3 @@ def _split_args(text: str) -> List[str]:
         return shlex.split(text)
     except ValueError:
         return text.split()
-
-
-def instance_config_from_dict(raw: Dict[str, Any]) -> InstanceConfig:
-    known = {f.name for f in fields(InstanceConfig)}
-    return InstanceConfig(**{k: v for k, v in raw.items() if k in known})  # type: ignore[arg-type]

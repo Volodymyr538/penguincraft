@@ -305,8 +305,36 @@ class LauncherApp(tk.Tk):
 
     def _game_exited(self, code: int) -> None:
         self.log(f"Игра завершилась с кодом {code}")
+        if code != 0:
+            self._report_crash(code)
         self.on_game_state_changed()
         self.refresh_all()
+
+    def _report_crash(self, code: int) -> None:
+        """Показывает отчёт о падении игры, если он появился."""
+        from .widgets import ask_yes_no, show_warning
+        from ..core.util import open_in_file_manager
+
+        report = None
+        process = self.manager.process
+        if process is not None:
+            try:
+                report = process.crash_report()
+            except Exception:  # noqa: BLE001
+                report = None
+        if report is not None:
+            self.log(f"Отчёт о падении: {report}")
+            show_warning(
+                self,
+                f"Игра завершилась с ошибкой (код {code}).\n\n"
+                f"Найден отчёт о падении:\n{report.name}",
+                "Игра упала",
+            )
+            if ask_yes_no(self, "Открыть папку с отчётами о падениях?", "Игра упала"):
+                open_in_file_manager(report.parent)
+        else:
+            self.set_status(f"Игра завершилась с кодом {code}", "error")
+            self.log("Отчёт о падении не найден — подробности в разделе «Консоль»")
 
     def _finish(self, label: str, payload, kind: str) -> None:
         task = self._current_task
