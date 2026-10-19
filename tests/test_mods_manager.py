@@ -106,6 +106,31 @@ class ParseMetadataTests(unittest.TestCase):
             self.assertIn("minecraft", meta["depends"])
             self.assertNotIn("optional-one", meta["depends"])
 
+    def test_forge_toml_without_tomllib(self) -> None:
+        """Проверяет резервный разбор TOML (Python 3.9/3.10 без tomllib)."""
+        import sys
+
+        saved = sys.modules.get("tomllib", "absent")
+        sys.modules["tomllib"] = None  # заставляет ``import tomllib`` упасть
+        try:
+            with TemporaryDirectory() as tmp:
+                jar = make_jar(
+                    Path(tmp) / "jei.jar",
+                    [("META-INF/mods.toml", FORGE_TOML)],
+                )
+                meta = mod_manager.parse_mod_metadata(jar)
+        finally:
+            if saved == "absent":
+                sys.modules.pop("tomllib", None)
+            else:
+                sys.modules["tomllib"] = saved
+
+        self.assertEqual(meta["id"], "jei")
+        self.assertEqual(meta["name"], "JEI")
+        self.assertIn("forge", meta["depends"])
+        self.assertIn("minecraft", meta["depends"])
+        self.assertNotIn("optional-one", meta["depends"])
+
     def test_mcmod_info(self) -> None:
         with TemporaryDirectory() as tmp:
             jar = make_jar(

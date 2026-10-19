@@ -178,6 +178,14 @@ _TOML_VERSION = re.compile(r'^\s*version\s*=\s*"([^"]*)"', re.MULTILINE)
 _TOML_DESC = re.compile(r'^\s*description\s*=\s*"([^"]*)"', re.MULTILINE)
 _TOML_MANDATORY = re.compile(r'^\s*mandatory\s*=\s*(true|false)', re.MULTILINE)
 
+#: Те же поля, но без привязки к началу строки — нужны для разбора
+#: встроенной таблицы ``mods=[{ modId="x", ... }]``, где ключи идут
+#: в одной строке.
+_HEAD_MODID = re.compile(r'\bmodId\s*=\s*"([^"]*)"')
+_HEAD_DISPLAY = re.compile(r'\bdisplayName\s*=\s*"([^"]*)"')
+_HEAD_VERSION = re.compile(r'\bversion\s*=\s*"([^"]*)"')
+_HEAD_DESC = re.compile(r'\bdescription\s*=\s*"([^"]*)"')
+
 
 def _forge_depends(data: Mapping[str, Any]) -> Dict[str, str]:
     """Собирает обязательные зависимости из таблиц ``dependencies`` Forge."""
@@ -225,6 +233,16 @@ def _parse_toml_mods(raw: bytes, loader: str) -> Dict[str, Any]:
             }
 
     # Ручной разбор (Python 3.9/3.10 или TOML со странностями).
+    # Блоки зависимостей идут в конце и содержат собственные ``modId``,
+    # поэтому для поиска «своих» полей мода их нужно отрезать, иначе
+    # первым попадётся, например, modId="forge".
+    cut = len(text)
+    for marker in ("[[dependencies", "[dependencies."):
+        position = text.find(marker)
+        if position != -1:
+            cut = min(cut, position)
+    head = text[:cut]
+
     depends: Dict[str, str] = {}
     block = re.compile(r"\[\[dependencies\.([^\]]+)\]\]")
     matches = list(block.finditer(text))
@@ -236,12 +254,17 @@ def _parse_toml_mods(raw: bytes, loader: str) -> Dict[str, Any]:
         dep = _TOML_MODID.search(chunk)
         if dep:
             depends[dep.group(1)] = ""
+
+    def first(pattern, source: str) -> str:
+        match = pattern.search(source)
+        return match.group(1) if match else ""
+
     return {
         "loader": loader,
-        "name": (_TOML_DISPLAY.search(text) or _TOML_MODID.search(text)).group(1) if (_TOML_DISPLAY.search(text) or _TOML_MODID.search(text)) else "",
-        "id": _TOML_MODID.search(text).group(1) if _TOML_MODID.search(text) else "",
-        "version": _TOML_VERSION.search(text).group(1) if _TOML_VERSION.search(text) else "",
-        "description": _TOML_DESC.search(text).group(1) if _TOML_DESC.search(text) else "",
+        "name": first(_HEAD_DISPLAY, head) or first(_HEAD_MODID, head),
+        "id": first(_HEAD_MODID, head) or first(_TOML_MODID, head),
+        "version": first(_HEAD_VERSION, head) or first(_TOML_VERSION, head),
+        "description": first(_HEAD_DESC, head) or first(_TOML_DESC, head),
         "authors": [],
         "depends": depends,
     }
