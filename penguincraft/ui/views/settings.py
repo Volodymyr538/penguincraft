@@ -77,6 +77,14 @@ class SettingsView(BaseView):
         ttk.Spinbox(frame, from_=1, to=32, textvariable=self.parallel_var, width=6).grid(row=row, column=1, sticky="w", pady=8)
         row += 1
 
+        ttk.Label(frame, text="Ограничение скорости (КБ/с, 0 — без лимита)", style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=8, padx=(0, 14))
+        self.limit_var = tk.IntVar()
+        ttk.Spinbox(
+            frame, from_=0, to=102400, increment=64,
+            textvariable=self.limit_var, width=8,
+        ).grid(row=row, column=1, sticky="w", pady=8)
+        row += 1
+
         ttk.Label(frame, text="Масштаб интерфейса", style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=8, padx=(0, 14))
         self.scale_var = tk.StringVar()
         self.scale_combo = ttk.Combobox(
@@ -233,6 +241,7 @@ class SettingsView(BaseView):
         buttons.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Button(buttons, text="Открыть каталог данных", command=lambda: open_in_file_manager(self.manager.paths.root)).pack(side="left")
         ttk.Button(buttons, text="Очистить кэш загрузок", command=self._clear_downloads).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Экспорт диагностики…", command=self._export_diagnostics).pack(side="left", padx=(8, 0))
         row += 1
 
         self.cache_label = ttk.Label(frame, text="", style="Muted.TLabel")
@@ -262,6 +271,7 @@ class SettingsView(BaseView):
         self.old_var.set(bool(settings.show_old_versions))
         self.confirm_var.set(bool(settings.confirm_delete))
         self.parallel_var.set(int(settings.parallel_downloads))
+        self.limit_var.set(int(settings.download_limit_kbps))
         self.close_var.set(bool(settings.close_on_launch))
 
         preset = JVM_PRESETS.get(settings.jvm_preset, JVM_PRESETS["balanced"])
@@ -306,7 +316,7 @@ class SettingsView(BaseView):
     def _check_launcher_update(self) -> None:
         def work(reporter):
             reporter.status("Проверка обновлений лаунчера…")
-            return self.manager.check_launcher_update()
+            return self.manager.check_launcher_update(raise_errors=True)
 
         def done(release) -> None:
             from ... import APP_VERSION
@@ -315,17 +325,21 @@ class SettingsView(BaseView):
                 show_info(self.app, "Не удалось проверить обновления (нет сети).")
                 return
             if release.is_newer:
-                show_info(
-                    self.app,
-                    f"Доступна новая версия PenguinCraft: {release.version}\n"
-                    f"У вас установлена {APP_VERSION}.\n\n"
-                    f"Скачать: {release.url}",
-                    "Обновление лаунчера",
-                )
+                self.app._notify_update(release)
             else:
                 show_info(self.app, f"У вас последняя версия ({APP_VERSION}).")
 
-        self.run_task("Проверка обновлений", work, on_done=done)
+        def failed(error) -> None:
+            show_info(
+                self.app,
+                "Не удалось проверить обновления.\n\n"
+                f"{error}\n\n"
+                "GitHub ограничивает частоту анонимных запросов. "
+                "Попробуйте позже или откройте страницу релизов вручную.",
+                "Обновление лаунчера",
+            )
+
+        self.run_task("Проверка обновлений", work, on_done=done, on_error=failed)
 
     def _update_mods_now(self) -> None:
         def work(reporter):
@@ -400,6 +414,12 @@ class SettingsView(BaseView):
             settings.parallel_downloads = max(1, min(int(self.parallel_var.get()), 32))
         except (tk.TclError, ValueError):
             pass
+        try:
+            new_limit = max(0, min(int(self.limit_var.get()), 102400))
+        except (tk.TclError, ValueError):
+            new_limit = settings.download_limit_kbps
+        limit_changed = new_limit != int(settings.download_limit_kbps)
+        settings.download_limit_kbps = new_limit
 
         settings.jvm_preset = self._current_preset_key()
         settings.memory_mode = self.memory_mode_var.get() or "auto"
@@ -438,7 +458,7 @@ class SettingsView(BaseView):
         settings.ui_scale = new_scale
 
         self.manager.save_settings()
-        if proxy_changed:
+        if proxy_changed or limit_changed:
             self.manager.reload_http()
         self.saved_hint.configure(text="Сохранено")
         self.app.update_header_status("")
@@ -469,3 +489,31 @@ class SettingsView(BaseView):
         self.manager.paths.downloads.mkdir(parents=True, exist_ok=True)
         self._update_cache_label()
         self.log("Кэш загрузок очищен")
+
+    def _export_diagnostics(self) -> None:
+        from ...core import diagnostics as diagnostics_module
+
+        target = filedialog.asksaveasfilename(
+            parent=self.app,
+            title="Куда сохранить диагностику",
+            defaultextension=".zip",
+            initialfile=diagnostics_module.default_name(),
+            filetypes=[("Архив ZIP", "*.zip"), ("Все файлы", "*.*")],
+        )
+        if not target:
+            return
+
+        def work(reporter):
+            return self.manager.export_diagnostics(target, reporter=reporter)
+
+        def done(path) -> None:
+            show_info(
+                self.app,
+                "Диагностика сохранена:\n"
+                f"{path}\n\n"
+                "В архив не попадают аккаунты и пароли — только версия, "
+                "система, настройки, журналы и отчёты о падениях.",
+                "Экспорт диагностики",
+            )
+
+        self.run_task("Экспорт диагностики", work, on_done=done)

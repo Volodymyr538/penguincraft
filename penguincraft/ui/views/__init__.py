@@ -16,6 +16,7 @@ def build_view(key: str, master, app) -> BaseView:
     from .modpacks import ModpacksView
     from .mods import ModsView
     from .settings import SettingsView
+    from .storage import StorageView
     from .versions import VersionsView
 
     mapping: Dict[str, Type[BaseView]] = {
@@ -26,6 +27,7 @@ def build_view(key: str, master, app) -> BaseView:
         "modpacks": ModpacksView,
         "accounts": AccountsView,
         "settings": SettingsView,
+        "storage": StorageView,
         "console": ConsoleView,
     }
     view_cls = mapping.get(key)

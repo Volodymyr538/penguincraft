@@ -221,6 +221,7 @@ class Settings:
     show_old_versions: bool = False
     confirm_delete: bool = True
     parallel_downloads: int = 8
+    download_limit_kbps: int = 0            # 0 = без ограничения
     proxy: str = ""
     ui_scale: float = 1.0                   # 1.0 = 100 %
 
@@ -279,6 +280,12 @@ class Settings:
         if self.theme not in ("dark", "light"):
             self.theme = "dark"
         self.parallel_downloads = max(1, min(int(self.parallel_downloads or 8), 32))
+        try:
+            self.download_limit_kbps = max(
+                0, min(int(self.download_limit_kbps or 0), 102400)
+            )
+        except (TypeError, ValueError):
+            self.download_limit_kbps = 0
         self.window_width = max(880, min(int(self.window_width or 1180), 4096))
         self.window_height = max(560, min(int(self.window_height or 760), 2400))
         self.resolution_width = max(320, min(int(self.resolution_width or 854), 7680))

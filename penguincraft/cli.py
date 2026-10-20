@@ -412,17 +412,158 @@ def cmd_update_mods(manager: LauncherManager, args: argparse.Namespace) -> int:
 
 
 def cmd_check_updates(manager: LauncherManager, args: argparse.Namespace) -> int:
-    from .core.update import check_latest
+    from .core.update import pick_asset
 
-    release = check_latest(manager.http)
+    try:
+        release = manager.check_launcher_update(raise_errors=True)
+    except Exception as error:  # noqa: BLE001
+        print(f"Не удалось проверить обновления: {error}", file=sys.stderr)
+        return 1
     if release is None:
         print("Не удалось проверить обновления (нет сети).", file=sys.stderr)
         return 1
     if release.is_newer:
         print(f"Доступна новая версия: {release.version}")
-        print(f"Скачать: {release.url}")
+        print(f"Страница релиза: {release.url}")
+        asset = pick_asset(release, portable=False)
+        if asset is not None:
+            print(f"Файл для вашей системы: {asset.name}")
         return 0
     print(f"Установлена последняя версия ({APP_VERSION}).")
+    return 0
+
+
+def cmd_storage(manager: LauncherManager, args: argparse.Namespace) -> int:
+    from .core import storage as storage_module
+
+    report = manager.storage_report()
+    print(f"Каталог данных: {report.root}")
+    print(f"Занято лаунчером: {storage_module.format_size(report.total)}")
+    print(
+        f"Свободно на диске: {storage_module.format_size(report.free)} "
+        f"из {storage_module.format_size(report.disk_total)}"
+    )
+    print()
+    for entry in report.entries:
+        print(
+            f"  {entry.title:<34} "
+            f"{storage_module.format_size(entry.size):>12}  "
+            f"{entry.files:>7} файлов"
+        )
+    if report.instances:
+        print()
+        print("Экземпляры:")
+        for item in report.instances:
+            print(
+                f"  {item.title:<34} "
+                f"{storage_module.format_size(item.size):>12}  "
+                f"{item.files:>7} файлов"
+            )
+    if report.unused_versions:
+        print()
+        print("Не используются ни одним экземпляром:")
+        for version_id in report.unused_versions:
+            print(f"  • {version_id}")
+    if report.unused_runtimes:
+        print()
+        print("Неиспользуемая Java: " + ", ".join(report.unused_runtimes))
+
+    if not (args.clean or args.versions or args.runtimes or args.backups):
+        return 0
+
+    reporter = Reporter(ConsoleReporter(args.verbose))
+    try:
+        freed = manager.clean_storage(
+            cache=args.clean,
+            logs=args.clean,
+            versions=args.versions,
+            runtimes=args.runtimes,
+            backups=args.backups,
+            days=args.days,
+            reporter=reporter,
+        )
+    except (LauncherError, Cancelled) as error:
+        print(f"Ошибка: {error}", file=sys.stderr)
+        return 1
+    total = sum(freed.values())
+    print()
+    print(f"Освобождено: {storage_module.format_size(total)}")
+    return 0
+
+
+def cmd_diagnostics(manager: LauncherManager, args: argparse.Namespace) -> int:
+    reporter = Reporter(ConsoleReporter(args.verbose))
+    try:
+        target = manager.export_diagnostics(args.output or "", reporter=reporter)
+    except (LauncherError, Cancelled, OSError) as error:
+        print(f"Ошибка: {error}", file=sys.stderr)
+        return 1
+    print(f"Диагностика сохранена: {target}")
+    return 0
+
+
+def cmd_mods_list(manager: LauncherManager, args: argparse.Namespace) -> int:
+    from .mods import share as mod_share
+
+    instance = manager.instances.get(args.instance)
+    if instance is None:
+        print(f"Экземпляр «{args.instance}» не найден", file=sys.stderr)
+        return 1
+    entries = mod_share.collect(manager, instance)
+    if args.output:
+        try:
+            target = manager.export_mod_list(instance, args.output, fmt=args.format)
+        except OSError as error:
+            print(f"Ошибка: {error}", file=sys.stderr)
+            return 1
+        print(f"Список модов сохранён: {target}")
+        return 0
+    text = (
+        mod_share.render_json(instance, entries)
+        if args.format == "json"
+        else mod_share.render_markdown(instance, entries)
+    )
+    print(text, end="")
+    return 0
+
+
+def cmd_compare(manager: LauncherManager, args: argparse.Namespace) -> int:
+    from .mods import share as mod_share
+
+    left = manager.instances.get(args.left)
+    right = manager.instances.get(args.right)
+    if left is None or right is None:
+        missing = args.left if left is None else args.right
+        print(f"Экземпляр «{missing}» не найден", file=sys.stderr)
+        return 1
+    comparison = manager.compare_instances(left, right)
+    print(mod_share.render_comparison(comparison))
+    return 0
+
+
+def cmd_optimize(manager: LauncherManager, args: argparse.Namespace) -> int:
+    instance = manager.instances.get(args.instance)
+    if instance is None:
+        print(f"Экземпляр «{args.instance}» не найден", file=sys.stderr)
+        return 1
+    reporter = Reporter(ConsoleReporter(args.verbose))
+    try:
+        result = manager.install_optimization_preset(instance, reporter=reporter)
+    except (LauncherError, Cancelled) as error:
+        print(f"Ошибка: {error}", file=sys.stderr)
+        return 1
+    print(f"Установлено: {len(result['installed'])}")
+    for title in result["installed"]:
+        print(f"  ✓ {title}")
+    if result["skipped"]:
+        print("Пропущено:")
+        for title in result["skipped"]:
+            print(f"  · {title}")
+    if result["failed"]:
+        print("Не удалось:")
+        for title in result["failed"]:
+            print(f"  ✗ {title}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -582,6 +723,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("check-updates", help="проверить обновления лаунчера")
     p.set_defaults(func=cmd_check_updates)
+
+    p = sub.add_parser("storage", help="показать и очистить занятое место")
+    p.add_argument("--clean", action="store_true", help="очистить кэш и старые журналы")
+    p.add_argument("--versions", action="store_true", help="удалить неиспользуемые версии")
+    p.add_argument("--runtimes", action="store_true", help="удалить неиспользуемую Java")
+    p.add_argument("--backups", action="store_true", help="удалить копии удалённых экземпляров")
+    p.add_argument("--days", type=int, default=7, help="хранить журналы N дней")
+    p.set_defaults(func=cmd_storage)
+
+    p = sub.add_parser("diagnostics", help="собрать zip с диагностикой")
+    p.add_argument("-o", "--output", default="", help="куда сохранить архив")
+    p.set_defaults(func=cmd_diagnostics)
+
+    p = sub.add_parser("mods-list", help="список модов экземпляра")
+    p.add_argument("instance")
+    p.add_argument("--format", default="md", choices=["md", "json"])
+    p.add_argument("-o", "--output", default="", help="файл (иначе печать в stdout)")
+    p.set_defaults(func=cmd_mods_list)
+
+    p = sub.add_parser("compare", help="сравнить моды двух экземпляров")
+    p.add_argument("left")
+    p.add_argument("right")
+    p.set_defaults(func=cmd_compare)
+
+    p = sub.add_parser("optimize", help="поставить пресет оптимизации")
+    p.add_argument("instance")
+    p.set_defaults(func=cmd_optimize)
 
     return parser
 

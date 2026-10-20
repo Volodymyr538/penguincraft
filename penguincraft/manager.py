@@ -15,6 +15,8 @@ from .auth.microsoft import MicrosoftAuth, MicrosoftAuthError
 from .auth.store import AccountStore
 from .auth.yggdrasil import YggdrasilAuth, YggdrasilError, AuthServer, ELYBY
 from .core.instances import GRAPHICS_PRESETS, InstanceManager, WorldInfo
+from .core import diagnostics as diagnostics_module
+from .core import storage as storage_module
 from .core.installer import InstallError, InstallPlan, install_version
 from .core.integrity import IntegrityReport, repair_version
 from .core.java import JavaRuntime, find_installed_java
@@ -25,9 +27,17 @@ from .core.paths import Paths
 from .core.session import SessionError, ensure_valid_account
 from .core.settings import InstanceConfig, Settings, auto_memory_mb
 from .core.task import Cancelled, Reporter
-from .core.update import ReleaseInfo, check_latest
+from .core.update import (
+    ReleaseInfo,
+    UpdateAsset,
+    check_latest,
+    download_update,
+    pick_asset,
+)
 from .loaders import Loader, LoaderError, get_loader, loader_for_version, local_versions
 from .mods import dependencies as mod_dependencies
+from .mods import presets as mod_presets
+from .mods import share as mod_share
 from .mods.modrinth import Modrinth, ModVersion
 from .mods.mrpack import (
     ModpackError,
@@ -54,7 +64,10 @@ class LauncherManager:
         # переименование, файлы остаются на месте.
         self.paths.migrate_legacy_game_dirs()
         self.settings = Settings.load(self.paths)
-        self.http = Http(proxy=self.settings.proxy or None)
+        self.http = Http(
+            proxy=self.settings.proxy or None,
+            limit_kbps=self.settings.download_limit_kbps,
+        )
         self.accounts = AccountStore(self.paths.accounts)
         self.instances = InstanceManager(self.paths, self.settings)
         self.repository = VersionRepository(self.paths, self.http)
@@ -70,10 +83,22 @@ class LauncherManager:
         self.settings.save(self.paths)
 
     def reload_http(self) -> None:
-        self.http = Http(proxy=self.settings.proxy or None)
+        self.http = Http(
+            proxy=self.settings.proxy or None,
+            limit_kbps=self.settings.download_limit_kbps,
+        )
         self.repository = VersionRepository(self.paths, self.http)
         self.manifest = self.repository.manifest
         self.modrinth = Modrinth(self.http)
+
+    def _ensure_space(self, needed: int, what: str, *, floor: int = 0) -> None:
+        """Не начинает операцию, если диск заведомо переполнится."""
+        try:
+            storage_module.ensure_free_space(
+                self.paths.root, needed, what=what, floor=floor
+            )
+        except storage_module.NotEnoughSpaceError as error:
+            raise LauncherError(str(error)) from error
 
     def java_runtimes(self) -> List[JavaRuntime]:
         return find_installed_java(self.paths)
@@ -839,9 +864,206 @@ class LauncherManager:
     # ------------------------------------------------------------------
     # Обновления лаунчера
     # ------------------------------------------------------------------
-    def check_launcher_update(self) -> Optional[ReleaseInfo]:
+    def check_launcher_update(self, *, raise_errors: bool = False) -> Optional[ReleaseInfo]:
         """Проверяет GitHub Releases (``None`` при ошибке сети)."""
-        return check_latest(self.http)
+        return check_latest(self.http, raise_errors=raise_errors)
+
+    def launcher_update_asset(
+        self,
+        release: ReleaseInfo,
+        *,
+        portable: bool = False,
+        platform: str = "",
+    ) -> Optional[UpdateAsset]:
+        """Подбирает файл обновления под текущую систему."""
+        return pick_asset(release, platform=platform, portable=portable)
+
+    def download_launcher_update(
+        self,
+        asset: UpdateAsset,
+        *,
+        reporter: Optional[Reporter] = None,
+    ) -> Path:
+        """Скачивает установщик новой версии в кэш обновлений."""
+        return download_update(
+            self.http, asset, self.paths.cache / "updates", reporter=reporter
+        )
+
+    # ------------------------------------------------------------------
+    # Хранилище
+    # ------------------------------------------------------------------
+    def storage_report(self) -> storage_module.StorageReport:
+        """Считает, сколько места занимают версии, моды, миры и кэш."""
+        return storage_module.scan(self.paths, self.instances.list())
+
+    def clean_storage(
+        self,
+        *,
+        cache: bool = False,
+        logs: bool = False,
+        versions: bool = False,
+        runtimes: bool = False,
+        backups: bool = False,
+        days: int = storage_module.LOG_KEEP_DAYS,
+        reporter: Optional[Reporter] = None,
+    ) -> Dict[str, int]:
+        """Чистит выбранные категории.  Возвращает освобождённые байты."""
+        freed: Dict[str, int] = {}
+        if reporter:
+            reporter.status("Очистка хранилища…")
+            reporter.check_cancel()
+        if cache:
+            freed["cache"] = storage_module.clean_cache(self.paths)
+        if logs:
+            size, _count = storage_module.clean_logs(self.paths, days=days)
+            freed["logs"] = size
+        if backups:
+            freed["backups"] = storage_module.clean_deleted_backups(self.paths)
+        report = None
+        if versions or runtimes:
+            report = storage_module.scan(self.paths, self.instances.list())
+        if versions and report is not None:
+            freed["versions"] = storage_module.clean_unused_versions(
+                self.paths, report.unused_versions
+            )
+        if runtimes and report is not None:
+            freed["runtimes"] = storage_module.clean_unused_runtimes(
+                self.paths, report.unused_runtimes
+            )
+        if reporter:
+            total = sum(freed.values())
+            reporter.log(f"Освобождено: {storage_module.format_size(total)}")
+        return freed
+
+    def free_space(self) -> Tuple[int, int]:
+        """Свободное и общее место на разделе с данными лаунчера."""
+        return storage_module.free_space(self.paths.root)
+
+    # ------------------------------------------------------------------
+    # Диагностика
+    # ------------------------------------------------------------------
+    def export_diagnostics(
+        self,
+        target: Path | str = "",
+        *,
+        reporter: Optional[Reporter] = None,
+    ) -> Path:
+        """Собирает zip с отчётом, журналами и отчётами о падениях."""
+        destination = Path(target) if target else (
+            Path.home() / diagnostics_module.default_name()
+        )
+        return diagnostics_module.export_diagnostics(
+            self, destination, reporter=reporter
+        )
+
+    # ------------------------------------------------------------------
+    # Списки модов
+    # ------------------------------------------------------------------
+    def export_mod_list(
+        self,
+        instance: InstanceConfig,
+        target: Path | str,
+        *,
+        fmt: str = "md",
+    ) -> Path:
+        """Сохраняет список модов экземпляра (``md`` или ``json``)."""
+        return mod_share.export_mod_list(self, instance, target, fmt=fmt)
+
+    def compare_instances(
+        self, left: InstanceConfig, right: InstanceConfig
+    ) -> mod_share.Comparison:
+        """Сравнивает наборы модов двух экземпляров."""
+        return mod_share.compare(self, left, right)
+
+    # ------------------------------------------------------------------
+    # Пресет оптимизации
+    # ------------------------------------------------------------------
+    def optimization_projects(self, instance: InstanceConfig) -> List[Any]:
+        return mod_presets.projects_for(instance.loader)
+
+    def install_optimization_preset(
+        self,
+        instance: InstanceConfig,
+        *,
+        with_dependencies: Optional[bool] = None,
+        reporter: Optional[Reporter] = None,
+    ) -> Dict[str, List[str]]:
+        """Ставит набор оптимизационных модов, подходящих экземпляру.
+
+        Возвращает три списка: ``installed``, ``skipped`` и ``failed``.
+        Недоступные для этой версии игры моды пропускаются, а не ломают
+        всю установку.
+        """
+        result: Dict[str, List[str]] = {"installed": [], "skipped": [], "failed": []}
+        loader = (instance.loader or "vanilla").lower()
+        if loader == "vanilla":
+            raise LauncherError(
+                "Оптимизационные моды требуют Fabric, Quilt, Forge или NeoForge. "
+                "Создайте модовый экземпляр или установите загрузчик."
+            )
+        projects = mod_presets.projects_for(loader)
+        if not projects:
+            raise LauncherError(f"Для загрузчика «{loader}» пресет не подобран.")
+
+        game_version = instance.game_version or instance.version_id
+        installed = {
+            record.project_id
+            for record in self.installed_index(instance).items()
+            if record.project_id
+        }
+        for number, item in enumerate(projects, start=1):
+            if reporter:
+                reporter.status(
+                    f"Оптимизация {number}/{len(projects)}: {item.title}…"
+                )
+                reporter.check_cancel()
+            try:
+                project = self.modrinth.project(item.slug)
+            except Exception as error:  # noqa: BLE001 - сеть/404
+                result["failed"].append(f"{item.title}: {error}")
+                if reporter:
+                    reporter.log(f"Оптимизация: {item.title} — {error}")
+                continue
+            project_id = str((project or {}).get("id") or "")
+            if not project_id:
+                result["failed"].append(f"{item.title}: проект не найден на Modrinth")
+                continue
+            if project_id in installed:
+                result["skipped"].append(f"{item.title} — уже установлен")
+                continue
+            try:
+                version = self.modrinth.best_version(
+                    project_id, loader=loader, game_version=game_version
+                )
+            except Exception as error:  # noqa: BLE001
+                result["failed"].append(f"{item.title}: {error}")
+                continue
+            if version is None:
+                result["skipped"].append(
+                    f"{item.title} — нет версии для {game_version}"
+                )
+                continue
+            try:
+                self.install_project_with_dependencies(
+                    instance,
+                    project_id,
+                    project_type="mod",
+                    version_id=version.id,
+                    with_dependencies=with_dependencies,
+                    reporter=reporter,
+                )
+            except Cancelled:
+                raise
+            except Exception as error:  # noqa: BLE001 - один мод не должен ронять всё
+                result["failed"].append(f"{item.title}: {error}")
+                if reporter:
+                    reporter.log(f"Оптимизация: {item.title} — {error}")
+                continue
+            installed.add(project_id)
+            result["installed"].append(item.title)
+            if reporter:
+                reporter.log(f"Оптимизация: установлен {item.title}")
+        return result
 
     # ------------------------------------------------------------------
     # Миры
@@ -867,6 +1089,15 @@ class LauncherManager:
         world_name: str = "",
         reporter: Optional[Reporter] = None,
     ) -> WorldInfo:
+        try:
+            archive_size = Path(archive).stat().st_size
+        except OSError:
+            archive_size = 0
+        if archive_size >= 8 * 1024 * 1024:
+            # Мир распаковывается в кэш и копируется в экземпляр — берём запас.
+            self._ensure_space(
+                archive_size * 8, "импорт мира", floor=64 * 1024 * 1024
+            )
         return self.instances.import_world(
             instance.name, archive, world_name=world_name, reporter=reporter
         )
@@ -1009,6 +1240,14 @@ class LauncherManager:
         if kind != "mrpack":
             raise LauncherError(
                 "Не удалось распознать формат модпака. Ожидается .mrpack от Modrinth."
+            )
+        try:
+            archive_size = Path(archive).stat().st_size
+        except OSError:
+            archive_size = 0
+        if archive_size >= 32 * 1024 * 1024:
+            self._ensure_space(
+                archive_size * 4, "установку модпака", floor=128 * 1024 * 1024
             )
         try:
             return install_modpack(

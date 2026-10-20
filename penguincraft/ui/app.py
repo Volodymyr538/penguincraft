@@ -32,6 +32,7 @@ NAV_ITEMS: List[Tuple[str, str]] = [
     ("mods", "Моды"),
     ("modpacks", "Модпаки"),
     ("accounts", "Аккаунты"),
+    ("storage", "Хранилище"),
     ("settings", "Настройки"),
     ("console", "Консоль"),
 ]
@@ -155,19 +156,193 @@ class LauncherApp(tk.Tk):
 
     def _notify_update(self, release) -> None:
         from .widgets import ask_yes_no
-        import webbrowser
+        from ..core.update import asset_kind_title
 
-        if ask_yes_no(
+        portable = self._is_portable_build()
+        asset = self.manager.launcher_update_asset(release, portable=portable)
+        if asset is None:
+            import webbrowser
+
+            if ask_yes_no(
+                self,
+                f"Доступна новая версия PenguinCraft: {release.version}\n"
+                f"У вас установлена {APP_VERSION}.\n\n"
+                "Для вашей системы не найден готовый файл. "
+                "Открыть страницу загрузки?",
+                "Обновление лаунчера",
+            ):
+                try:
+                    webbrowser.open(release.url)
+                except Exception:  # noqa: BLE001
+                    pass
+            return
+
+        can_install = asset.kind in ("windows-setup", "linux-installer")
+        if asset.kind == "windows-portable":
+            action = "Скачать новую версию рядом с текущим файлом?"
+        elif can_install:
+            action = "Скачать и установить сейчас?"
+        else:
+            action = "Скачать файл обновления?"
+
+        if not ask_yes_no(
             self,
             f"Доступна новая версия PenguinCraft: {release.version}\n"
             f"У вас установлена {APP_VERSION}.\n\n"
-            "Открыть страницу загрузки?",
+            f"Подходящий файл: {asset.name}\n"
+            f"({asset_kind_title(asset.kind)}).\n\n"
+            f"{action}",
             "Обновление лаунчера",
         ):
+            return
+        self._download_update(release, asset)
+
+    def _is_portable_build(self) -> bool:
+        """Запущены ли мы из переносимого ``*-portable.exe``."""
+        import sys
+
+        if not getattr(sys, "frozen", False):
+            return False
+        return "portable" in Path(sys.executable).name.lower()
+
+    def _download_update(self, release, asset) -> None:
+        def work(reporter):
+            return self.manager.download_launcher_update(asset, reporter=reporter)
+
+        def done(path) -> None:
+            if path:
+                self._install_update(Path(path), asset)
+
+        self.run_task(f"Загрузка PenguinCraft {release.version}", work, on_done=done)
+
+    def _install_update(self, path: Path, asset) -> None:
+        """Запускает установщик или сохраняет файл рядом с лаунчером."""
+        import os
+        import shlex
+        import shutil
+        import subprocess
+        import sys
+
+        from .widgets import show_info
+        from ..core.util import open_in_file_manager
+
+        if asset.kind == "windows-portable":
+            target = Path(sys.executable).with_name(asset.name)
             try:
-                webbrowser.open(release.url)
-            except Exception:  # noqa: BLE001
-                pass
+                shutil.copy2(path, target)
+            except OSError as error:
+                show_info(
+                    self,
+                    f"Не удалось сохранить файл рядом с лаунчером:\n{error}\n\n"
+                    f"Обновление лежит здесь:\n{path}",
+                    "Обновление лаунчера",
+                )
+                return
+            show_info(
+                self,
+                f"Новая версия сохранена:\n{target}\n\n"
+                "Запустите её — настройки, экземпляры и миры останутся прежними.",
+                "Обновление лаунчера",
+            )
+            open_in_file_manager(target.parent)
+            return
+
+        if asset.kind == "windows-setup":
+            show_info(
+                self,
+                "Лаунчер закроется и запустит установщик. "
+                "После установки новая версия откроется автоматически.",
+                "Обновление лаунчера",
+            )
+            exe = sys.executable
+            # ``start /wait`` дожидается установщика и снова открывает
+            # лаунчер: у Inno-сценария ``postinstall skipifsilent``, поэтому
+            # в тихом режиме сам он приложение не запускает.
+            try:
+                subprocess.Popen(
+                    f'cmd /c start "" /wait "{path}" /SILENT '
+                    f'/CLOSEAPPLICATIONS /NORESTART & start "" "{exe}"',
+                    close_fds=True,
+                    creationflags=0x00000008,  # DETACHED_PROCESS
+                )
+            except OSError as error:
+                show_info(
+                    self,
+                    f"Не удалось запустить установщик:\n{error}\n\n"
+                    f"Файл обновления:\n{path}",
+                    "Обновление лаунчера",
+                )
+                return
+            self.after(600, self.destroy)
+            return
+
+        if asset.kind == "linux-installer":
+            command = self._installed_command()
+            if not command:
+                show_info(
+                    self,
+                    "Установщик скачан:\n"
+                    f"{path}\n\n"
+                    "Лаунчер запущен не из установленной копии. "
+                    "Установите обновление вручную:\n"
+                    f'sh "{path}"',
+                    "Обновление лаунчера",
+                )
+                return
+            show_info(
+                self,
+                "Лаунчер закроется, установит обновление и откроется снова.",
+                "Обновление лаунчера",
+            )
+            pid = os.getpid()
+            extra = " ".join(shlex.quote(arg) for arg in sys.argv[1:])
+            relaunch = (
+                f'"{command}" {extra}' if extra else f'"{command}" gui'
+            )
+            script = (
+                f'while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; '
+                f'sh "{path}" >/dev/null 2>&1; '
+                f'({relaunch} >/dev/null 2>&1 &)'
+            )
+            try:
+                subprocess.Popen(
+                    ["sh", "-c", script],
+                    close_fds=True,
+                    start_new_session=True,
+                )
+            except OSError as error:
+                show_info(
+                    self,
+                    f"Не удалось запустить установщик:\n{error}\n\n"
+                    f'Установите вручную: sh "{path}"',
+                    "Обновление лаунчера",
+                )
+                return
+            self.after(600, self.destroy)
+            return
+
+        # .deb и прочее — только подсказка.
+        show_info(
+            self,
+            f"Файл обновления скачан:\n{path}\n\n"
+            + (
+                f'Установите его командой:\nsudo dpkg -i "{path}"'
+                if asset.kind == "linux-deb"
+                else "Запустите его вручную."
+            ),
+            "Обновление лаунчера",
+        )
+        open_in_file_manager(path.parent)
+
+    def _installed_command(self) -> str:
+        """Путь к установленной команде ``penguincraft`` (или пусто)."""
+        import shutil
+
+        found = shutil.which("penguincraft")
+        if found:
+            return found
+        candidate = Path.home() / ".local" / "bin" / "penguincraft"
+        return str(candidate) if candidate.is_file() else ""
 
     def _maybe_auto_update_mods(self) -> None:
         if self._current_task is not None or self.manager.game_running:

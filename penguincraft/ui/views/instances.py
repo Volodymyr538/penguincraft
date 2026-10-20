@@ -527,6 +527,100 @@ class WorldsDialog(tk.Toplevel):
         )
 
 
+class CompareDialog(tk.Toplevel):
+    """Сравнение модов двух экземпляров."""
+
+    def __init__(self, app, manager, instance, others):
+        super().__init__(app)
+        self.app = app
+        self.manager = manager
+        self.instance = instance
+        self.others = list(others)
+        self.title(f"Сравнение «{instance.display_name}»")
+        self.transient(app)
+        self.configure(bg=app.theme.colors["panel"])
+        self.geometry("760x540")
+        self.minsize(560, 380)
+        try:
+            self.grab_set()
+        except tk.TclError:  # pragma: no cover
+            pass
+
+        body = ttk.Frame(self, style="Card.TFrame", padding=14)
+        body.pack(fill="both", expand=True)
+
+        top = ttk.Frame(body, style="Card.TFrame")
+        top.pack(fill="x")
+        ttk.Label(top, text="Сравнить с:", style="CardMuted.TLabel").pack(side="left")
+        self.choice = tk.StringVar()
+        self.combo = ttk.Combobox(
+            top,
+            state="readonly",
+            width=34,
+            textvariable=self.choice,
+            values=[item.display_name for item in self.others],
+        )
+        self.combo.pack(side="left", padx=(8, 0))
+        self.combo.current(0)
+        self.combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh())
+        ttk.Button(top, text="Скопировать", command=self._copy).pack(side="right")
+        ttk.Button(top, text="Обновить", command=self._refresh).pack(
+            side="right", padx=(0, 8)
+        )
+
+        colors = app.theme.colors
+        self.text = tk.Text(
+            body,
+            wrap="word",
+            height=20,
+            background=colors["input"],
+            foreground=colors["text"],
+            insertbackground=colors["text"],
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=colors["border"],
+        )
+        self.text.pack(fill="both", expand=True, pady=(10, 0))
+        self.status = ttk.Label(body, text="", style="CardMuted.TLabel")
+        self.status.pack(anchor="w", pady=(8, 0))
+
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self._refresh()
+
+    # ------------------------------------------------------------------
+    def _other(self):
+        index = self.combo.current()
+        if 0 <= index < len(self.others):
+            return self.others[index]
+        return self.others[0] if self.others else None
+
+    def _refresh(self) -> None:
+        from ...mods import share as mod_share
+
+        other = self._other()
+        if other is None:
+            return
+        try:
+            comparison = self.manager.compare_instances(self.instance, other)
+            text = mod_share.render_comparison(comparison)
+        except Exception as error:  # noqa: BLE001
+            text = f"Не удалось сравнить: {error}"
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("1.0", text)
+        self.text.configure(state="disabled")
+        count = len(self.manager.list_mods(self.instance))
+        self.status.configure(text=f"Модов в «{self.instance.display_name}»: {count}")
+
+    def _copy(self) -> None:
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self.text.get("1.0", "end-1c"))
+            self.status.configure(text="Скопировано в буфер обмена.")
+        except tk.TclError:
+            pass
+
+
 class InstancesView(BaseView):
     title = "Экземпляры"
     subtitle = "Отдельные установки игры со своими модами и настройками"
@@ -543,6 +637,12 @@ class InstancesView(BaseView):
         ttk.Button(toolbar, text="Экспорт…", command=self._export).pack(side="left", padx=(8, 0))
         ttk.Button(toolbar, text="Импорт…", command=self._import).pack(side="left", padx=(8, 0))
         ttk.Button(toolbar, text="Обновить", style="Ghost.TButton", command=self.reload).pack(side="right")
+
+        tools = ttk.Frame(page, style="TFrame")
+        tools.pack(fill="x", pady=(0, 10))
+        ttk.Button(tools, text="Оптимизировать…", command=self._optimize).pack(side="left")
+        ttk.Button(tools, text="Поделиться списком модов…", command=self._share_mods).pack(side="left", padx=(8, 0))
+        ttk.Button(tools, text="Сравнить экземпляры…", command=self._compare).pack(side="left", padx=(8, 0))
 
         split = ttk.Frame(page, style="TFrame")
         split.pack(fill="both", expand=True)
@@ -724,6 +824,107 @@ class InstancesView(BaseView):
             f"Установка «{instance.display_name}»",
             lambda reporter: self.manager.install_instance(instance, reporter=reporter),
         )
+
+    # ------------------------------------------------------------------
+    def _optimize(self) -> None:
+        instance = self._current()
+        if instance is None:
+            show_info(self.app, "Выберите экземпляр.")
+            return
+        projects = self.manager.optimization_projects(instance)
+        if not projects:
+            show_info(
+                self.app,
+                "Пресет оптимизации ставится только на Fabric, Quilt, Forge "
+                "или NeoForge. Для ваниллы сначала установите загрузчик.",
+                "Пресет оптимизации",
+            )
+            return
+        listing = "\n".join(f"• {item.title} — {item.note}" for item in projects)
+        if not ask_yes_no(
+            self.app,
+            f"Установить пресет оптимизации для «{instance.display_name}»?\n\n"
+            f"{listing}\n\n"
+            f"Моды без версии под {instance.game_version or instance.version_id} "
+            "будут пропущены. Уже установленные не дублируются.",
+            "Пресет оптимизации",
+        ):
+            return
+
+        def work(reporter):
+            return self.manager.install_optimization_preset(
+                instance, reporter=reporter
+            )
+
+        def done(result) -> None:
+            lines = [f"Установлено: {len(result['installed'])}"]
+            lines += [f"  ✓ {title}" for title in result["installed"]]
+            if result["skipped"]:
+                lines += ["", "Пропущено:"]
+                lines += [f"  · {title}" for title in result["skipped"]]
+            if result["failed"]:
+                lines += ["", "Не удалось:"]
+                lines += [f"  ✗ {title}" for title in result["failed"]]
+            show_info(self.app, "\n".join(lines), "Пресет оптимизации")
+            self.reload()
+            self.app.refresh_all()
+
+        self.run_task("Пресет оптимизации", work, on_done=done)
+
+    def _share_mods(self) -> None:
+        instance = self._current()
+        if instance is None:
+            show_info(self.app, "Выберите экземпляр.")
+            return
+        target = filedialog.asksaveasfilename(
+            parent=self.app,
+            title="Куда сохранить список модов",
+            defaultextension=".md",
+            initialfile=f"{instance.name}-mods.md",
+            filetypes=[
+                ("Markdown", "*.md"),
+                ("JSON", "*.json"),
+                ("Все файлы", "*.*"),
+            ],
+        )
+        if not target:
+            return
+        fmt = "json" if target.lower().endswith(".json") else "md"
+
+        def work(reporter):
+            reporter.status("Собираю список модов…")
+            return self.manager.export_mod_list(instance, target, fmt=fmt)
+
+        def done(path) -> None:
+            self.app.log(f"Список модов сохранён: {path}")
+            show_info(
+                self.app,
+                f"Список модов сохранён:\n{path}\n\n"
+                "Его можно отправить другу или приложить к сообщению об ошибке.",
+                "Список модов",
+            )
+
+        self.run_task("Список модов", work, on_done=done)
+
+    def _compare(self) -> None:
+        instance = self._current()
+        if instance is None:
+            show_info(self.app, "Выберите экземпляр.")
+            return
+        others = [
+            item
+            for item in self.manager.instances.list()
+            if item.name != instance.name
+        ]
+        if not others:
+            show_info(
+                self.app,
+                "Для сравнения нужен ещё хотя бы один экземпляр.",
+                "Сравнение экземпляров",
+            )
+            return
+        dialog = CompareDialog(self.app, self.manager, instance, others)
+        self.wait_window(dialog)
 
     # ------------------------------------------------------------------
     def _export(self) -> None:

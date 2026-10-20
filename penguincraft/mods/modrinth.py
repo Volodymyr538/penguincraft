@@ -309,13 +309,35 @@ class Modrinth:
         game_version: str = "",
         prefer_release: bool = True,
     ) -> Optional[ModVersion]:
-        """Подбирает наиболее подходящую версию проекта."""
-        loaders = [loader] if loader and loader != "vanilla" else []
-        versions = self.versions(project_id, loaders=loaders, game_versions=[game_version] if game_version else [])
-        if not versions and (loaders or game_version):
-            versions = self.versions(project_id)
-        if not versions:
+        """Подбирает наиболее подходящую версию проекта.
+
+        Если указан загрузчик, версия обязана его поддерживать: иначе на
+        NeoForge-сборку можно случайно поставить Fabric-мод (Modrinth не
+        считает это ошибкой, а игра потом падает).
+        """
+        requested = [loader] if loader and loader != "vanilla" else []
+        versions = self.versions(
+            project_id,
+            loaders=requested,
+            game_versions=[game_version] if game_version else [],
+        )
+        if not versions and requested:
+            # Версия игры может быть помечена иначе — пробуем без неё.
+            versions = self.versions(project_id, loaders=requested)
+        if not versions and requested:
             return None
+        if not versions and game_version:
+            versions = self.versions(project_id, game_versions=[game_version])
+        if not versions:
+            versions = self.versions(project_id)
+
+        def supports(version: ModVersion) -> bool:
+            if not requested:
+                return True
+            if loader in version.loaders:
+                return True
+            # Quilt запускает Fabric-моды, если автор не отметил Quilt явно.
+            return loader == "quilt" and "fabric" in version.loaders
 
         def score(version: ModVersion) -> Tuple[int, int, str]:
             type_score = {"release": 2, "beta": 1, "alpha": 0}.get(version.version_type, 0)
@@ -325,7 +347,7 @@ class Modrinth:
             loader_score = 1 if (loader and loader in version.loaders) else 0
             return (type_score + game_score * 2 + loader_score * 2, version.downloads, version.date_published)
 
-        candidates = [item for item in versions if item.files]
+        candidates = [item for item in versions if item.files and supports(item)]
         if not candidates:
             return None
         return max(candidates, key=score)

@@ -129,6 +129,36 @@ class BestVersionTests(unittest.TestCase):
         client = self._modrinth([])
         self.assertIsNone(client.best_version("p"))
 
+    def test_loader_mismatch_returns_none(self) -> None:
+        client = self._modrinth(
+            [
+                self._raw(
+                    "fabric-only",
+                    "1.0",
+                    loaders=["fabric"],
+                    game_versions=["1.20.1"],
+                )
+            ]
+        )
+        self.assertIsNone(
+            client.best_version("p", loader="neoforge", game_version="1.20.1")
+        )
+
+    def test_quilt_accepts_fabric_mod(self) -> None:
+        client = self._modrinth(
+            [
+                self._raw(
+                    "fabric-only",
+                    "1.0",
+                    loaders=["fabric"],
+                    game_versions=["1.20.1"],
+                )
+            ]
+        )
+        best = client.best_version("p", loader="quilt", game_version="1.20.1")
+        self.assertIsNotNone(best)
+        self.assertEqual(best.id, "fabric-only")
+
 
 class VersionByHashTests(unittest.TestCase):
     def test_short_hash_returns_none(self) -> None:

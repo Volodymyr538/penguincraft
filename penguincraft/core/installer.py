@@ -8,14 +8,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
-from .assets import AssetResult, install_assets
+from .assets import AssetResult, install_assets, load_index
 from .java import JavaRuntime, ensure_java
-from .libraries import install_libraries
+from .libraries import build_plan, install_libraries
 from .mojang import VersionRepository, java_major_for
 from .net import Http
 from .paths import Paths
 from .rules import default_platform
 from .settings import Settings
+from .storage import ensure_free_space, free_space
 from .task import Reporter
 from .util import hash_file
 
@@ -63,6 +64,85 @@ def _try_hardlink(source: Path, target: Path) -> bool:
         return True
     except OSError:
         return False
+
+
+#: Сколько примерно весят ресурсы игры, если индекса ещё нет локально.
+ASSETS_FALLBACK_BYTES = 300 * 1024 * 1024
+
+
+def estimate_missing_size(
+    paths: Paths,
+    version: Mapping[str, Any],
+    version_id: str = "",
+    *,
+    platform: Optional[Mapping[str, Any]] = None,
+) -> int:
+    """Оценка того, сколько байт нужно докачать для запуска версии.
+
+    Считаются только отсутствующие файлы: клиент, библиотеки, natives и
+    объекты ресурсов.  Если индекса ресурсов ещё нет, берётся разумная
+    оценка сверху.  Оценка нужна не для точности, а чтобы не начинать
+    установку, которая гарантированно упрётся в переполненный диск.
+    """
+    plat = platform if platform is not None else default_platform()
+    total = 0
+
+    downloads = version.get("downloads") or {}
+    client = downloads.get("client") if isinstance(downloads, Mapping) else None
+    if isinstance(client, Mapping) and int(client.get("size") or 0) > 0:
+        size = int(client.get("size") or 0)
+        target = client_jar_path(paths, version_id or str(version.get("id") or ""), version)
+        try:
+            present = target.is_file() and (not size or target.stat().st_size == size)
+        except OSError:
+            present = False
+        if not present:
+            total += size
+
+    try:
+        plan = build_plan(version.get("libraries") or [], plat)
+    except Exception:  # noqa: BLE001 - оценка не должна ломать установку
+        plan = None
+    if plan is not None:
+        for item in plan.all_files():
+            target = paths.libraries / item.relative
+            try:
+                present = target.is_file() and (
+                    not item.size or target.stat().st_size == item.size
+                )
+            except OSError:
+                present = False
+            if not present:
+                total += max(0, int(item.size or 0))
+
+    asset_index = version.get("assetIndex") or {}
+    index_id = str(
+        (asset_index.get("id") if isinstance(asset_index, Mapping) else "")
+        or version.get("assets")
+        or ""
+    )
+    if index_id:
+        index = load_index(paths, index_id)
+        if index is None:
+            total += ASSETS_FALLBACK_BYTES
+        else:
+            for meta in (index.get("objects") or {}).values():
+                if not isinstance(meta, Mapping):
+                    continue
+                digest = str(meta.get("hash") or "")
+                if not digest:
+                    continue
+                size = int(meta.get("size") or 0)
+                target = paths.asset_objects / digest[:2] / digest
+                try:
+                    present = target.is_file() and (
+                        not size or target.stat().st_size == size
+                    )
+                except OSError:
+                    present = False
+                if not present:
+                    total += size
+    return total
 
 
 def ensure_client_jar(
@@ -249,6 +329,25 @@ def install_version(
         top.check_cancel()
 
     platform = default_platform()
+
+    # 1.5. Свободное место: не начинаем заведомо провальную установку.
+    # Оценку считаем только когда места действительно мало — иначе это
+    # лишние тысячи обращений к диску на каждом запуске игры.
+    try:
+        free_bytes, _total_bytes = free_space(paths.root)
+    except Exception:  # noqa: BLE001
+        free_bytes = 0
+    if free_bytes < 3 * 1024 ** 3:
+        try:
+            needed = estimate_missing_size(paths, version, version_id, platform=platform)
+        except Exception:  # noqa: BLE001 - оценка не обязательна
+            needed = 0
+        if needed >= 64 * 1024 * 1024:
+            if top:
+                top.status("Проверка свободного места…")
+            ensure_free_space(paths.root, needed, what=f"установку {version_id}")
+    if top:
+        top.check_cancel()
 
     # 2. Java --------------------------------------------------------------
     required_java = java_major_for(version)
